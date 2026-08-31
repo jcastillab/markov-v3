@@ -49,9 +49,9 @@ PREDICTION_FILES = {
 def weekly_status(ratio: float | None) -> str:
     if ratio is None or not np.isfinite(ratio):
         return "SIN REAL / N.A."
-    if 93 <= ratio <= 107:
+    if 0.93 <= ratio <= 1.07:
         return "ACIERTO"
-    if 90 <= ratio < 93 or 107 < ratio <= 110:
+    if 0.90 <= ratio < 0.93 or 1.07 < ratio <= 1.10:
         return "CERCA"
     return "NO ACIERTO"
 
@@ -148,10 +148,21 @@ def _add_semaphores(ws, row_end: int, headers: list[str]):
             col = get_column_letter(lookup[label]); ws.conditional_formatting.add(
                 f"{col}3:{col}{row_end}", ColorScaleRule(start_type="min", start_color=GREEN,
                 mid_type="percentile", mid_value=50, mid_color=YELLOW, end_type="max", end_color=RED))
+    if "acierto_pct" in lookup:
+        col = get_column_letter(lookup["acierto_pct"]); rng = f"{col}3:{col}{row_end}"
+        ws.conditional_formatting.add(rng, CellIsRule(operator="between", formula=["0.93", "1.07"], fill=PatternFill("solid", fgColor=GREEN)))
+        ws.conditional_formatting.add(rng, CellIsRule(operator="between", formula=["0.90", "0.93"], fill=PatternFill("solid", fgColor=YELLOW)))
+        ws.conditional_formatting.add(rng, CellIsRule(operator="between", formula=["1.07", "1.10"], fill=PatternFill("solid", fgColor=YELLOW)))
+        ws.conditional_formatting.add(rng, CellIsRule(operator="lessThan", formula=["0.90"], fill=PatternFill("solid", fgColor=RED)))
+        ws.conditional_formatting.add(rng, CellIsRule(operator="greaterThan", formula=["1.10"], fill=PatternFill("solid", fgColor=RED)))
 
 
 def build_workbook(root: Path) -> Path:
     cfg, metrics, traces = load_config(root / "config/pipeline.yaml"), _metrics(root), _traces(root)
+    acierto_by_model = {}
+    for model, frame in traces.items():
+        acierto_by_model[model] = np.where(frame.real != 0,
+            1 - (frame.real - frame.proyectado) / frame.real, np.nan).mean()
     reports = root / cfg["paths"]["outputs"] / "reports"; reports.mkdir(parents=True, exist_ok=True)
     output = reports / "tablero_rendimiento_modelos.xlsx"
     wb = Workbook(); intro = wb.active; intro.title = "INICIO"
@@ -161,7 +172,8 @@ def build_workbook(root: Path) -> Path:
     intro_rows = [
         ("Uso", "Filtre las hojas METRICAS, SEMANAL y DIARIO por modelo, finca, bloque y fecha."),
         ("Ranking primario", "Solo VALIDATION causal diaria n=714. No mezcla P32 retrospectivo, clima parcial ni métricas semanales."),
-        ("Semáforo semanal", "ACIERTO: proyectado/real entre 93%-107%; CERCA: 90%-92,9% o 107,1%-110%; NO ACIERTO: fuera de esos rangos."),
+        ("Acierto", "Se calcula como 1 - (real - proyectado) / real, tanto diario como semanal. Para real=0 queda N.A.; no se deriva de WAPE."),
+        ("Semáforo semanal", "ACIERTO: precisión relativa entre 93%-107%; CERCA: 90%-92,9% o 107,1%-110%; NO ACIERTO: fuera de rangos."),
         ("Semáforo de error", "WAPE <=30% verde; >30%-55% amarillo; >55% rojo. MAE/RMSE usan escala relativa de la tabla: menor es verde."),
         ("Acierto global", "La columna heredada acierto_global equivale a 1-WAPE; no es el indicador semanal de razón proyectado/real."),
         ("Cobertura", "SIN TRAZABILIDAD indica que la fase dejó métricas agregadas sin pronósticos por fecha; no se infiere cobertura."),
@@ -171,12 +183,12 @@ def build_workbook(root: Path) -> Path:
     for cell in intro["A"][1:]: cell.font = Font(bold=True)
 
     primary = metrics[metrics.comparacion_primaria].sort_values("wape").drop_duplicates("experiment_id").copy()
-    primary["wape_pct"] = primary.wape; primary["acierto_global_pct"] = primary.acierto_global
-    summary_cols = ["experiment_id", "wape_pct", "acierto_global_pct", "mae", "rmse", "bias_pct", "n"]
+    primary["wape_pct"] = primary.wape; primary["acierto_pct"] = primary.experiment_id.map(acierto_by_model)
+    summary_cols = ["experiment_id", "wape_pct", "acierto_pct", "mae", "rmse", "bias_pct", "n"]
     ws = wb.create_sheet("RESUMEN")
     end = _write_table(ws, primary[summary_cols], "Ranking primario: VALIDATION causal diaria n=714", {"wape_pct", "acierto_global_pct", "bias_pct"})
     ws.conditional_formatting.add(f"B3:B{end}", ColorScaleRule(start_type="min", start_color=GREEN, mid_type="percentile", mid_value=50, mid_color=YELLOW, end_type="max", end_color=RED))
-    ws.conditional_formatting.add(f"C3:C{end}", ColorScaleRule(start_type="min", start_color=RED, mid_type="percentile", mid_value=50, mid_color=YELLOW, end_type="max", end_color=GREEN))
+    _add_semaphores(ws, end, list(primary[summary_cols].columns))
     chart = BarChart(); chart.title = "WAPE de modelos comparables"; chart.y_axis.title = "WAPE"; chart.height = 9; chart.width = 18
     chart.add_data(Reference(ws, min_col=2, min_row=2, max_row=min(end, 12)), titles_from_data=True)
     chart.set_categories(Reference(ws, min_col=1, min_row=3, max_row=min(end, 12))); ws.add_chart(chart, "J3")
@@ -195,24 +207,28 @@ def build_workbook(root: Path) -> Path:
         if not {"finca", "bloque", "fecha_origen", "fecha_objetivo"}.issubset(frame.columns):
             continue
         daily = frame.copy(); daily["error"] = daily.proyectado - daily.real
-        daily["error_abs"] = daily.error.abs(); daily["ratio_proyeccion_pct"] = np.where(daily.real != 0, daily.proyectado / daily.real * 100, np.nan)
+        daily["error_abs"] = daily.error.abs(); daily["ratio_proyeccion_pct"] = np.where(daily.real != 0, daily.proyectado / daily.real, np.nan)
+        daily["acierto_pct"] = np.where(daily.real != 0, 1 - (daily.real - daily.proyectado) / daily.real, np.nan)
         daily_frames.append(daily)
-        weekly = daily.groupby(["modelo", "finca", "bloque", "fecha_origen"], as_index=False).agg(
+        weekly = daily.groupby(["modelo", "finca", "fecha_origen"], as_index=False).agg(
             real_semana=("real", "sum"), proyectado_semana=("proyectado", "sum"), dias_pronosticados=("fecha_objetivo", "nunique"))
-        weekly["ratio_proyeccion_pct"] = np.where(weekly.real_semana != 0, weekly.proyectado_semana / weekly.real_semana * 100, np.nan)
+        weekly["ratio_proyeccion_pct"] = np.where(weekly.real_semana != 0, weekly.proyectado_semana / weekly.real_semana, np.nan)
+        weekly["acierto_pct"] = np.where(weekly.real_semana != 0, 1 - (weekly.real_semana - weekly.proyectado_semana) / weekly.real_semana, np.nan)
         weekly["indicador_semanal"] = weekly.ratio_proyeccion_pct.map(weekly_status)
         weekly_frames.append(weekly)
-        found = set(map(tuple, weekly[["finca", "bloque", "fecha_origen"]].itertuples(index=False, name=None)))
-        coverage_rows.append({"modelo": model, "semanas_esperadas": len(expected), "semanas_con_pronostico": len(found),
-                              "semanas_sin_pronostico": len(expected - found),
-                              "aciertos_verdes": int(weekly.indicador_semanal.eq("ACIERTO").sum()),
-                              "cerca_amarillos": int(weekly.indicador_semanal.eq("CERCA").sum()),
-                              "no_aciertos_rojos": int(weekly.indicador_semanal.eq("NO ACIERTO").sum()),
+        for finca, finca_weekly in weekly.groupby("finca"):
+            expected_finca = {key[2] for key in expected if key[0] == finca}
+            found = set(finca_weekly.fecha_origen)
+            coverage_rows.append({"modelo": model, "finca": finca, "semanas_esperadas": len(expected_finca), "semanas_con_pronostico": len(found),
+                              "semanas_sin_pronostico": len(expected_finca - found),
+                              "aciertos_verdes": int(finca_weekly.indicador_semanal.eq("ACIERTO").sum()),
+                              "cerca_amarillos": int(finca_weekly.indicador_semanal.eq("CERCA").sum()),
+                              "no_aciertos_rojos": int(finca_weekly.indicador_semanal.eq("NO ACIERTO").sum()),
                               "estado_trazabilidad": "TRAZABLE"})
     covered = {r["modelo"] for r in coverage_rows}
     for model in metrics.experiment_id.drop_duplicates():
         if model not in covered:
-            coverage_rows.append({"modelo": model, "semanas_esperadas": len(expected), "semanas_con_pronostico": np.nan,
+            coverage_rows.append({"modelo": model, "finca": "TODAS", "semanas_esperadas": np.nan, "semanas_con_pronostico": np.nan,
                                   "semanas_sin_pronostico": np.nan, "aciertos_verdes": np.nan, "cerca_amarillos": np.nan,
                                   "no_aciertos_rojos": np.nan, "estado_trazabilidad": "SIN TRAZABILIDAD"})
     coverage = pd.DataFrame(coverage_rows).sort_values("modelo")
@@ -223,16 +239,34 @@ def build_workbook(root: Path) -> Path:
 
     weekly_all = pd.concat(weekly_frames, ignore_index=True).sort_values(["modelo", "fecha_origen"])
     ws = wb.create_sheet("SEMANAL")
-    end = _write_table(ws, weekly_all, "Proyectado vs real por semana de origen", {"ratio_proyeccion_pct"})
+    end = _write_table(ws, weekly_all, "Proyectado vs real por semana de origen", {"ratio_proyeccion_pct", "acierto_pct"})
     col = get_column_letter(list(weekly_all.columns).index("indicador_semanal") + 1)
     ws.conditional_formatting.add(f"{col}3:{col}{end}", CellIsRule(operator="equal", formula=['"ACIERTO"'], fill=PatternFill("solid", fgColor=GREEN)))
     ws.conditional_formatting.add(f"{col}3:{col}{end}", CellIsRule(operator="equal", formula=['"CERCA"'], fill=PatternFill("solid", fgColor=YELLOW)))
     ws.conditional_formatting.add(f"{col}3:{col}{end}", CellIsRule(operator="equal", formula=['"NO ACIERTO"'], fill=PatternFill("solid", fgColor=RED)))
+    _add_semaphores(ws, end, list(weekly_all.columns))
 
     daily_all = pd.concat(daily_frames, ignore_index=True).sort_values(["modelo", "fecha_objetivo"])
     ws = wb.create_sheet("DIARIO")
-    end = _write_table(ws, daily_all, "Proyectado vs real diario", {"ratio_proyeccion_pct"})
+    end = _write_table(ws, daily_all, "Proyectado vs real diario", {"ratio_proyeccion_pct", "acierto_pct"})
     _add_semaphores(ws, end, list(daily_all.columns))
+
+    control_rows = []
+    for model, frame in traces.items():
+        if not {"real", "proyectado"}.issubset(frame.columns):
+            continue
+        y, p = frame.real.to_numpy(float), frame.proyectado.to_numpy(float)
+        denom = np.abs(y).sum()
+        calculated = {"wape_recalculado": np.abs(p - y).sum() / denom if denom else np.nan,
+                      "mae_recalculado": np.abs(p - y).mean(),
+                      "rmse_recalculado": np.sqrt(np.mean((p - y) ** 2)),
+                      "acierto_relativo_medio": np.where(y != 0, 1 - (y - p) / y, np.nan).mean()}
+        source = metrics[metrics.experiment_id.eq(model)]
+        control_rows.append({"modelo": model, "n_predicciones": len(frame),
+                             **calculated, "metricas_fuente": "DISPONIBLE" if len(source) else "N.A."})
+    ws = wb.create_sheet("CONTROL_RF_GLM")
+    end = _write_table(ws, pd.DataFrame(control_rows), "Control: métricas recalculadas desde predicciones trazables", {"wape_recalculado", "acierto_relativo_medio"})
+    _add_semaphores(ws, end, list(pd.DataFrame(control_rows).columns))
 
     bayes_cols = [c for c in ("experiment_id", "wape", "coverage_interval_80", "coverage_interval_95", "ancho_medio_intervalo", "n") if c in metrics]
     ws = wb.create_sheet("BAYES")

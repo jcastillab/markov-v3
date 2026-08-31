@@ -11,6 +11,7 @@ matplotlib>=3.8
 # Tests
 pytest>=8.0
 tabulate>=0.9
+streamlit>=1.40
 
 # Bayes (Fase 7) - instalar al llegar a la fase
 # pymc>=5.10
