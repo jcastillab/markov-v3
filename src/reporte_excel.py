@@ -23,7 +23,7 @@ except ModuleNotFoundError:
 GREEN, YELLOW, RED, BLUE, DARK = "C6EFCE", "FFEB9C", "FFC7CE", "D9EAF7", "1F4E78"
 
 PREDICTION_FILES = {
-    "E00_M3_BASE": "outputs/predictions/E00_M3_BASE_operational.csv",
+    "E00_M3_BASE": "outputs/evaluation/predictions_e00_m3_base_rolling.csv",
     "E01_M3_INGRESO_CALIBRADO": "outputs/predictions/E01_M3_INGRESO_CALIBRADO.csv",
     "E02_M3_P32_RAW": "outputs/predictions/E02_M3_P32_RAW.csv",
     "E03_M3_P32_CANONICO": "outputs/predictions/E03_M3_P32_CANONICO.csv",
@@ -36,7 +36,7 @@ PREDICTION_FILES = {
     "RF_DIARIO_POOLED_FENO_CLIMA": "outputs/evaluation/predictions_feno_clima.csv",
     "RF_DIARIO_POOLED_FENO_PODA_CLIMA": "outputs/evaluation/predictions_feno_poda_clima.csv",
     "RF_RESIDUAL_M3_FENO": "outputs/evaluation/predictions_rf_residual_m3_feno.csv",
-    "RF_H1_H7_FENO": "outputs/evaluation/predictions_rf_h1_h7_feno.csv",
+    "RF_H1_H7_FENO": "outputs/evaluation/predictions_rf_h1_h7_feno_rolling.csv",
     "GLM_NB_FENO": "outputs/evaluation/predictions_glm_nb_feno.csv",
     "GLM_NB_FENO_PODA": "outputs/evaluation/predictions_glm_nb_feno_poda.csv",
     "GLM_NB_FENO_CLIMA": "outputs/evaluation/predictions_glm_nb_feno_clima.csv",
