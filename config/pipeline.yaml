@@ -169,6 +169,11 @@ random_forest:
   max_features: [sqrt, 0.5]
   n_estimators: 500
 
+supervised:
+  nb_alpha: 1.0
+  nb_max_iter: 300
+  rf_ablation_sets: [FENO, FENO_PODA, FENO_CLIMA, FENO_PODA_CLIMA]
+
 bayes:
   seed: 42
 

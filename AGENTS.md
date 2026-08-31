@@ -59,7 +59,7 @@ outputs/                 Generado (gitignored): data_quality, datasets,
 | 3 | P32: M3_P32 + Semi Markov corregido (x0 por edad) | **CERRADA** |
 | 4 | Podas: análisis lags + M3+poda | **CERRADA** |
 | 5 | Clima: VPD/GDD/DLI correctos + M3+clima (PRADERA) | **CERRADA** |
-| 6 | GLM NB + Random Forest + residual M3 | pendiente |
+| 6 | GLM NB + Random Forest + residual M3 | **CERRADA** |
 | 7 | Bayes: Dirichlet-Multinomial, NB jerárquico | pendiente |
 | 8 | Comparación final + reporte + champion/challengers | pendiente |
 
