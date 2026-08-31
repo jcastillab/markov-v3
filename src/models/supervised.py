@@ -16,14 +16,20 @@ except ModuleNotFoundError:
 def _history(fact, finca, bloque, date):
     h = fact[(fact.finca == finca) & (fact.bloque == bloque) & (fact.fecha <= date)]
     h = h.sort_values("fecha").set_index("fecha")["corte_comercial_real"]
+    calendar = pd.date_range(h.index.min(), date, freq="D") if len(h) else pd.DatetimeIndex([])
+    h = h.reindex(calendar)
     row = {}
     for lag in (1, 2, 3, 7, 14):
-        row[f"corte_lag_{lag}d"] = float(h.get(date - pd.Timedelta(days=lag), 0.0))
+        value = h.get(date - pd.Timedelta(days=lag), np.nan)
+        row[f"corte_lag_{lag}d"] = float(value) if pd.notna(value) else np.nan
+        row[f"corte_lag_{lag}d_observado"] = float(pd.notna(value))
     for width in (3, 7, 14, 28):
         values = h.tail(width)
-        row[f"corte_sum_{width}d"] = float(values.sum())
+        row[f"corte_sum_{width}d"] = float(values.sum(min_count=1)) if values.notna().any() else np.nan
+        row[f"corte_dias_observados_{width}d"] = float(values.notna().sum())
+        row[f"corte_dias_faltantes_{width}d"] = float(values.isna().sum())
         if width in (7, 28):
-            row[f"corte_mean_{width}d"] = float(values.mean())
+            row[f"corte_mean_{width}d"] = float(values.mean()) if values.notna().any() else np.nan
     return row
 
 

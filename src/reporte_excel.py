@@ -42,7 +42,19 @@ PREDICTION_FILES = {
     "GLM_NB_FENO_CLIMA": "outputs/evaluation/predictions_glm_nb_feno_clima.csv",
     "GLM_NB_FENO_PODA_CLIMA": "outputs/evaluation/predictions_glm_nb_feno_poda_clima.csv",
     "NB_JERARQUICO": "outputs/evaluation/predictions_nb_jerarquico.csv",
+    "NB_JERARQUICO_COVARIABLES": "outputs/evaluation/predictions_nb_jerarquico_covariables.csv",
     "M3_DIRICHLET_MULTINOMIAL": "outputs/evaluation/predictions_m3_dirichlet.csv",
+}
+
+PREDICTION_FILES_FIXED = {
+    **PREDICTION_FILES,
+    "E00_M3_BASE": "outputs/evaluation/E00_M3_BASE.csv",
+    "RF_H1_H7_FENO": "outputs/evaluation/predictions_rf_h1_h7_feno.csv",
+}
+
+PREDICTION_FILES_ROLLING = {
+    "E00_M3_BASE": "outputs/evaluation/predictions_e00_m3_base_rolling.csv",
+    "RF_H1_H7_FENO": "outputs/evaluation/predictions_rf_h1_h7_feno_rolling.csv",
 }
 
 
@@ -69,9 +81,9 @@ def _metrics(root: Path) -> pd.DataFrame:
     return result
 
 
-def _traces(root: Path) -> dict[str, pd.DataFrame]:
+def _traces(root: Path, prediction_files: dict[str, str] | None = None) -> dict[str, pd.DataFrame]:
     result = {}
-    for model, relative in PREDICTION_FILES.items():
+    for model, relative in (prediction_files or PREDICTION_FILES).items():
         path = root / relative
         if not path.exists():
             continue

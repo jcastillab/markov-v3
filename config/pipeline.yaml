@@ -178,6 +178,7 @@ supervised:
 bayes:
   seed: 42
   dirichlet_prior_strength: 5.0
+  covariate_ridge: 1.0
   posterior_draws: 100
   hierarchical_shrinkage: 10.0
 

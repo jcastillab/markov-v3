@@ -21,3 +21,14 @@ def test_dirichlet_draws_are_probability_simplex():
     posterior = DirichletM3(intervals, matrix, 5)
     q, r, loss = posterior.draw_matrix()
     assert np.allclose(q.sum(axis=0) + r + loss, 1)
+
+
+def test_dirichlet_ap_uses_cut_once():
+    from src.models.bayes import DirichletM3
+    from src.models.m3 import M3Matrix
+    matrix = M3Matrix("A", "JULIO", np.eye(3) * .8,
+                      np.array([.1, .1, .1]), np.array([.1, .1, .1]), pd.DataFrame())
+    posterior = DirichletM3(pd.DataFrame({"estado_origen": ["AP"] * 3,
+                                          "evento": ["STAY", "CUT", "LOSS"]}), matrix, 5)
+    q, r, loss = posterior.draw_matrix()
+    assert np.isclose(q[2, 2] + r[2] + loss[2], 1)

@@ -11,7 +11,7 @@ import pandas as pd
 
 from canonical import load_config
 from evaluation.metrics import metrics
-from models.bayes import DirichletM3, HierarchicalNB
+from models.bayes import CovariateHierarchicalNB, DirichletM3, HierarchicalNB
 from models.m3 import _period_for_date, fit_m3, simulate
 
 
@@ -22,6 +22,8 @@ def main():
     fact = pd.read_parquet(datasets / "fact_bloque_dia.parquet")
     intervals = pd.read_parquet(datasets / "transition_intervals_tradicional.parquet")
     frame = pd.read_parquet(datasets / "dataset_supervisado_diario.parquet")
+    frame["semana_del_año"] = pd.to_datetime(frame["fecha_origen"]).dt.isocalendar().week.astype(float)
+    frame["periodo_ABRIL_JULIO"] = (pd.to_datetime(frame["fecha_origen"]).dt.month >= 7).astype(float)
     origins = (windows.groupby(["finca", "bloque", "fecha_origen"], as_index=False)
                .size().drop(columns="size").sort_values("fecha_origen"))
     n = max(cfg["evaluation"]["min_train_windows"], int(len(origins) * .60))
@@ -37,7 +39,22 @@ def main():
     coverage95 = np.mean((valid.target.to_numpy() >= intervals_nb[2]) & (valid.target.to_numpy() <= intervals_nb[3]))
     rows = [{"experiment_id": "NB_JERARQUICO", "split": "VALIDATION", "causal": True,
              "coverage_interval_80": coverage80, "coverage_interval_95": coverage95,
-             "ancho_medio_intervalo": float(np.mean(intervals_nb[1] - intervals_nb[0])), **nb_metrics}]
+              "ancho_medio_intervalo": float(np.mean(intervals_nb[1] - intervals_nb[0])), **nb_metrics}]
+    bayes_features = ["RC_t0", "SS_t0", "AP_t0", "p_RC", "p_SS", "p_AP", "TOTAL_t0",
+                      "factor_extrapolacion", "corte_lag_1d", "corte_lag_2d", "corte_lag_3d",
+                      "corte_sum_3d", "corte_sum_7d", "corte_sum_14d", "corte_mean_7d",
+                      "horizonte_dia", "semana_del_año", "periodo_ABRIL_JULIO"]
+    cov_nb = CovariateHierarchicalNB(cfg["bayes"]["hierarchical_shrinkage"],
+                                     cfg["bayes"].get("covariate_ridge", 1.0)).fit(train, bayes_features)
+    pred_cov = cov_nb.predict(valid)
+    intervals_cov = cov_nb.predictive_interval(valid, cfg["bayes"]["posterior_draws"], cfg["bayes"]["seed"])
+    cov_metrics = metrics(valid.target, pd.Series(pred_cov))
+    rows.append({"experiment_id": "NB_JERARQUICO_COVARIABLES", "split": "VALIDATION", "causal": True,
+                 "coverage_interval_80": np.mean((valid.target.to_numpy() >= intervals_cov[0]) &
+                                                   (valid.target.to_numpy() <= intervals_cov[1])),
+                 "coverage_interval_95": np.mean((valid.target.to_numpy() >= intervals_cov[2]) &
+                                                   (valid.target.to_numpy() <= intervals_cov[3])),
+                 "ancho_medio_intervalo": float(np.mean(intervals_cov[1] - intervals_cov[0])), **cov_metrics})
     # Posterior Dirichlet por origen, con matriz M3 causal como centro del prior.
     pred, lows, highs, real = [], [], [], []
     for _, row in valid.iterrows():
@@ -65,6 +82,10 @@ def main():
                   low80=intervals_nb[0], high80=intervals_nb[1],
                   low95=intervals_nb[2], high95=intervals_nb[3]).to_csv(
         evaluation / "predictions_nb_jerarquico.csv", index=False)
+    trace.assign(real=valid.target.to_numpy(), pred=pred_cov,
+                 low80=intervals_cov[0], high80=intervals_cov[1],
+                 low95=intervals_cov[2], high95=intervals_cov[3]).to_csv(
+        evaluation / "predictions_nb_jerarquico_covariables.csv", index=False)
     pd.DataFrame(rows).to_csv(evaluation / "metrics_fase7_bayes.csv", index=False)
     posterior.posterior_summary(cfg["bayes"]["posterior_draws"]).to_csv(models / "dirichlet_posterior_summary.csv", index=False)
     (models / "bayes_manifest.json").write_text(json.dumps({"phase": 7, "causal": True,

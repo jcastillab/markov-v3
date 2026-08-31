@@ -36,8 +36,9 @@ def main():
     pred_map = {"E00_M3_BASE": "E00_M3_BASE.csv",
                 "RF_DIARIO_POOLED_FENO": "predictions_feno.csv",
                 "RF_H1_H7_FENO": "predictions_rf_h1_h7_feno.csv",
-                "RF_RESIDUAL_M3_FENO": "predictions_rf_residual_m3_feno.csv",
-                "NB_JERARQUICO": "predictions_nb_jerarquico.csv"}
+                 "RF_RESIDUAL_M3_FENO": "predictions_rf_residual_m3_feno.csv",
+                 "NB_JERARQUICO": "predictions_nb_jerarquico.csv",
+                 "NB_JERARQUICO_COVARIABLES": "predictions_nb_jerarquico_covariables.csv"}
     ci_low, ci_high = [], []
     for _, row in ranked.iterrows():
         path = pred_map.get(row.experiment_id)
