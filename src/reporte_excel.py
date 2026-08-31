@@ -81,6 +81,8 @@ def _traces(root: Path) -> dict[str, pd.DataFrame]:
         if real_col not in frame or pred_col not in frame:
             continue
         frame = frame.rename(columns={pred_col: "proyectado", real_col: "real"})
+        frame["proyectado_modelo"] = frame["proyectado"]
+        frame["proyectado"] = np.ceil(frame["proyectado_modelo"])
         frame["modelo"] = model
         for col in ("fecha_origen", "fecha_objetivo"):
             if col in frame:
@@ -165,7 +167,7 @@ def build_workbook(root: Path) -> Path:
     acierto_by_model = {}
     for model, frame in traces.items():
         acierto_by_model[model] = np.where(frame.real != 0,
-            1 - (frame.real - frame.proyectado) / frame.real, np.nan).mean()
+            1 - (frame.real - frame.proyectado_modelo) / frame.real, np.nan).mean()
     reports = root / cfg["paths"]["outputs"] / "reports"; reports.mkdir(parents=True, exist_ok=True)
     output = reports / "tablero_rendimiento_modelos.xlsx"
     wb = Workbook(); intro = wb.active; intro.title = "INICIO"
@@ -189,7 +191,7 @@ def build_workbook(root: Path) -> Path:
     primary["wape_pct"] = primary.wape; primary["acierto_pct"] = primary.experiment_id.map(acierto_by_model)
     summary_cols = ["experiment_id", "wape_pct", "acierto_pct", "mae", "rmse", "bias_pct", "n"]
     ws = wb.create_sheet("RESUMEN")
-    end = _write_table(ws, primary[summary_cols], "Ranking primario: VALIDATION causal diaria n=714", {"wape_pct", "acierto_global_pct", "bias_pct"})
+    end = _write_table(ws, primary[summary_cols], "Ranking primario: VALIDATION causal diaria n=714", {"wape_pct", "acierto_pct", "bias_pct"})
     ws.conditional_formatting.add(f"B3:B{end}", ColorScaleRule(start_type="min", start_color=GREEN, mid_type="percentile", mid_value=50, mid_color=YELLOW, end_type="max", end_color=RED))
     _add_semaphores(ws, end, list(primary[summary_cols].columns))
     chart = BarChart(); chart.title = "WAPE de modelos comparables"; chart.y_axis.title = "WAPE"; chart.height = 9; chart.width = 18
@@ -209,17 +211,19 @@ def build_workbook(root: Path) -> Path:
     for model, frame in traces.items():
         if not {"finca", "bloque", "fecha_origen", "fecha_objetivo"}.issubset(frame.columns):
             continue
-        daily = frame.copy(); daily["error"] = daily.proyectado - daily.real
-        daily["error_abs"] = daily.error.abs(); daily["ratio_proyeccion_pct"] = np.where(daily.real != 0, daily.proyectado / daily.real, np.nan)
-        daily["acierto_pct"] = np.where(daily.real != 0, 1 - (daily.real - daily.proyectado) / daily.real, np.nan)
+        daily = frame.copy(); daily["error"] = daily.proyectado_modelo - daily.real
+        daily["error_abs"] = daily.error.abs(); daily["ratio_proyeccion_pct"] = np.where(daily.real != 0, daily.proyectado_modelo / daily.real, np.nan)
+        daily["acierto_pct"] = np.where(daily.real != 0, 1 - (daily.real - daily.proyectado_modelo) / daily.real, np.nan)
         daily_frames.append(daily)
         weekly = daily.groupby(["modelo", "finca", "semana_proyeccion"], as_index=False).agg(
             fecha_origen=("fecha_origen", "min"), real_semana=("real", lambda s: s.sum(min_count=1)),
-            proyectado_semana=("proyectado", lambda s: s[daily.loc[s.index, "real"].notna()].sum()),
-            proyectado_semana_total=("proyectado", "sum"), dias_pronosticados=("fecha_objetivo", "nunique"),
+            proyectado_semana_modelo=("proyectado_modelo", lambda s: s[daily.loc[s.index, "real"].notna()].sum()),
+            proyectado_semana_total_modelo=("proyectado_modelo", "sum"), dias_pronosticados=("fecha_objetivo", "nunique"),
             filas_pronosticadas=("real", "size"), filas_reales=("real", "count"))
         weekly["estado_ventana"] = np.select([weekly.filas_reales.eq(0), weekly.filas_reales.eq(weekly.filas_pronosticadas)], ["PENDIENTE_REAL", "VALIDA"], default="PARCIAL")
-        weekly["ratio_proyeccion_pct"] = np.where(weekly.filas_reales.gt(0) & weekly.real_semana.ne(0), weekly.proyectado_semana / weekly.real_semana, np.nan)
+        weekly["proyectado_semana"] = np.ceil(weekly["proyectado_semana_modelo"])
+        weekly["proyectado_semana_total"] = np.ceil(weekly["proyectado_semana_total_modelo"])
+        weekly["ratio_proyeccion_pct"] = np.where(weekly.filas_reales.gt(0) & weekly.real_semana.ne(0), weekly.proyectado_semana_modelo / weekly.real_semana, np.nan)
         weekly["acierto_pct"] = np.where(weekly.ratio_proyeccion_pct.notna(), weekly.ratio_proyeccion_pct, np.nan)
         weekly["indicador_semanal"] = weekly.ratio_proyeccion_pct.map(weekly_status)
         weekly_frames.append(weekly)
@@ -263,7 +267,7 @@ def build_workbook(root: Path) -> Path:
         if not {"real", "proyectado"}.issubset(frame.columns):
             continue
         trace_valid = frame[frame.real.notna() & frame.proyectado.notna()]
-        y, p = trace_valid.real.to_numpy(float), trace_valid.proyectado.to_numpy(float)
+        y, p = trace_valid.real.to_numpy(float), trace_valid.proyectado_modelo.to_numpy(float)
         denom = np.abs(y).sum()
         calculated = {"wape_recalculado": np.abs(p - y).sum() / denom if denom else np.nan,
                       "mae_recalculado": np.abs(p - y).mean(),
@@ -281,7 +285,7 @@ def build_workbook(root: Path) -> Path:
         observed = frame[frame.real.notna() & frame.proyectado.notna()]
         if observed.empty:
             continue
-        error = observed.proyectado - observed.real
+        error = observed.proyectado_modelo - observed.real
         denom = observed.real.abs().sum()
         observed_rows.append({"modelo": model, "alcance": "todos los reales disponibles", "n": len(observed),
                               "wape": error.abs().sum() / denom if denom else np.nan,

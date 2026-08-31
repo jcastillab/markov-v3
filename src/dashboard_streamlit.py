@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 import streamlit as st
 
 from reporte_excel import _metrics, _traces, weekly_status
@@ -21,20 +22,25 @@ def load_data():
         frame["fecha_objetivo"] = pd.to_datetime(frame["fecha_objetivo"])
         if "semana_proyeccion" not in frame:
             frame["semana_proyeccion"] = frame["fecha_objetivo"].dt.isocalendar().year * 100 + frame["fecha_objetivo"].dt.isocalendar().week
-        frame["acierto_pct"] = (1 - (frame["real"] - frame["proyectado"]) / frame["real"].where(frame["real"] != 0)).astype(float)
-        frame["error_abs"] = (frame["proyectado"] - frame["real"]).abs()
+        frame["acierto_pct"] = (1 - (frame["real"] - frame["proyectado_modelo"]) / frame["real"].where(frame["real"] != 0)).astype(float)
+        frame["error_abs"] = (frame["proyectado_modelo"] - frame["real"]).abs()
+        frame["error_abs"] = (frame["proyectado_modelo"] - frame["real"]).abs()
         daily.append(frame)
     daily = pd.concat(daily, ignore_index=True) if daily else pd.DataFrame()
     weekly = (daily.groupby(["modelo", "finca", "semana_proyeccion"], as_index=False)
               .agg(fecha_origen=("fecha_origen", "min"), real=("real", lambda s: s.sum(min_count=1)),
-                   proyectado=("proyectado", lambda s: s[daily.loc[s.index, "real"].notna()].sum()),
-                   proyectado_total=("proyectado", "sum"), dias=("fecha_objetivo", "nunique"),
+                   proyectado=("proyectado_modelo", lambda s: s[daily.loc[s.index, "real"].notna()].sum()),
+                   proyectado_total=("proyectado_modelo", "sum"), dias=("fecha_objetivo", "nunique"),
                    filas_pronosticadas=("real", "size"), filas_reales=("real", "count")))
     weekly["estado_ventana"] = pd.Series(pd.NA, index=weekly.index, dtype="string")
     weekly.loc[weekly.filas_reales.eq(0), "estado_ventana"] = "PENDIENTE_REAL"
     weekly.loc[weekly.filas_reales.eq(weekly.filas_pronosticadas), "estado_ventana"] = "VALIDA"
     weekly.loc[weekly.filas_reales.between(1, weekly.filas_pronosticadas - 1), "estado_ventana"] = "PARCIAL"
-    weekly["acierto_pct"] = 1 - (weekly["real"] - weekly["proyectado"]) / weekly["real"].where(weekly.filas_reales.gt(0) & weekly["real"].ne(0))
+    weekly["proyectado_modelo"] = weekly["proyectado"]
+    weekly["proyectado_total_modelo"] = weekly["proyectado_total"]
+    weekly["proyectado_total"] = np.ceil(weekly["proyectado_total"])
+    weekly["proyectado"] = np.ceil(weekly["proyectado"])
+    weekly["acierto_pct"] = 1 - (weekly["real"] - weekly["proyectado_modelo"]) / weekly["real"].where(weekly.filas_reales.gt(0) & weekly["real"].ne(0))
     weekly["estado"] = weekly["acierto_pct"].map(weekly_status)
     return metrics, daily, weekly
 
@@ -65,7 +71,7 @@ if horizon != "Todos": filtered = filtered[filtered.horizonte_dia.eq(horizon)]
 
 denom = filtered.real.abs().sum()
 wape = filtered.error_abs.sum() / denom if denom else float("nan")
-accuracy = (1 - (filtered.real.sum() - filtered.proyectado.sum()) / filtered.real.sum()) if filtered.real.sum() else float("nan")
+accuracy = (1 - (filtered.real.sum() - filtered.proyectado_modelo.sum()) / filtered.real.sum()) if filtered.real.sum() else float("nan")
 c_week = weekly.copy()
 if model != "Todos": c_week = c_week[c_week.modelo.eq(model)]
 if farm != "Todas": c_week = c_week[c_week.finca.eq(farm)]
