@@ -173,6 +173,7 @@ supervised:
   nb_alpha: 1.0
   nb_max_iter: 300
   rf_ablation_sets: [FENO, FENO_PODA, FENO_CLIMA, FENO_PODA_CLIMA]
+  rolling_min_train_origins: 4
 
 bayes:
   seed: 42

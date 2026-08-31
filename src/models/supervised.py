@@ -27,12 +27,13 @@ def _history(fact, finca, bloque, date):
     return row
 
 
-def build_supervised_dataset(windows, fact, intervals, cfg, pruning=None, climate=None):
+def build_supervised_dataset(windows, fact, intervals, cfg, pruning=None, climate=None,
+                             include_incomplete=False):
     """Una fila por ventana diaria, con historiales limitados a t0."""
     rows = []
     cache = {}
     for _, w in windows.iterrows():
-        if not w.ventana_evaluable:
+        if not include_incomplete and not w.ventana_evaluable:
             continue
         key = (w.finca, w.bloque, w.fecha_origen)
         if key not in cache:
