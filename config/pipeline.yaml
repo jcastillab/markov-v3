@@ -126,6 +126,8 @@ climate:
     LA PRADERA: 746
   gdd_bases: [5.0, 5.2]
   causal_windows_days: [1, 3, 7, 14, 21, 28, 42, 56]
+  coefficient_grid: [0.0, 0.01, 0.02, 0.05, 0.10]
+  modifier_scale: 1.0
   fuente: EXTERIOR_ESTACION
   microclima_invernadero_disponible: false
   # Conversion radiacion onda corta -> PAR/PPFD (declarar incertidumbre)
