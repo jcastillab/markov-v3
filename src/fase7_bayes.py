@@ -58,11 +58,12 @@ def main():
     rows.append({"experiment_id": "M3_DIRICHLET_MULTINOMIAL", "split": "VALIDATION", "causal": True,
                  "coverage_interval_80": np.mean((real >= lows) & (real <= highs)),
                  "coverage_interval_95": np.nan, "ancho_medio_intervalo": float(np.mean(highs - lows)), **d_metrics})
-    pd.DataFrame({"real": real, "pred": pred, "low80": lows, "high80": highs}).to_csv(
+    trace = valid[["finca", "bloque", "fecha_origen", "fecha_objetivo", "horizonte_dia"]].reset_index(drop=True)
+    trace.assign(real=real, pred=pred, low80=lows, high80=highs).to_csv(
         evaluation / "predictions_m3_dirichlet.csv", index=False)
-    pd.DataFrame({"real": valid.target.to_numpy(), "pred": pred_nb,
-                  "low80": intervals_nb[0], "high80": intervals_nb[1],
-                  "low95": intervals_nb[2], "high95": intervals_nb[3]}).to_csv(
+    trace.assign(real=valid.target.to_numpy(), pred=pred_nb,
+                  low80=intervals_nb[0], high80=intervals_nb[1],
+                  low95=intervals_nb[2], high95=intervals_nb[3]).to_csv(
         evaluation / "predictions_nb_jerarquico.csv", index=False)
     pd.DataFrame(rows).to_csv(evaluation / "metrics_fase7_bayes.csv", index=False)
     posterior.posterior_summary(cfg["bayes"]["posterior_draws"]).to_csv(models / "dirichlet_posterior_summary.csv", index=False)

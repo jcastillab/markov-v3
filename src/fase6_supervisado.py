@@ -38,12 +38,15 @@ def main():
     numeric = frame.select_dtypes(include=[np.number]).columns
     x_base = frame[numeric].replace([np.inf, -np.inf], np.nan).fillna(0)
     rows = []
+    trace_columns = ["finca", "bloque", "fecha_origen", "fecha_objetivo", "horizonte_dia", "target"]
+    trace = frame.loc[valid, trace_columns].reset_index(drop=True).rename(columns={"target": "real"})
     for name, cols in groups.items():
         cols = list(dict.fromkeys(c for c in cols if c in x_base.columns))
         x = x_base[cols]
         glm = NegativeBinomialGLM(cfg["supervised"]["nb_alpha"], cfg["supervised"]["nb_max_iter"])
         glm.fit(x[train], frame.target.to_numpy()[train])
         pred = glm.predict(x[valid])
+        trace.assign(pred=pred).to_csv(evaluation / f"predictions_glm_nb_{name.lower()}.csv", index=False)
         rows.append({"experiment_id": f"GLM_NB_{name}", "split": "VALIDATION", "causal": True,
                      "n": int(valid.sum()), **metrics(frame.target[valid], pd.Series(pred))})
         from sklearn.ensemble import RandomForestRegressor
@@ -52,7 +55,7 @@ def main():
             min_samples_leaf=rf_cfg["min_samples_leaf_grid"][0], min_samples_split=rf_cfg["min_samples_split_grid"][0],
             max_features=rf_cfg["max_features"][0], random_state=rf_cfg["random_state"], n_jobs=-1)
         rf.fit(x[train], frame.target[train]); pred = rf.predict(x[valid])
-        pd.DataFrame({"real": frame.target[valid].to_numpy(), "pred": pred}).to_csv(
+        trace.assign(pred=pred).to_csv(
             evaluation / f"predictions_{name.lower()}.csv", index=False)
         rows.append({"experiment_id": f"RF_DIARIO_POOLED_{name}", "split": "VALIDATION", "causal": True,
                      "n": int(valid.sum()), **metrics(frame.target[valid], pd.Series(pred))})
@@ -72,7 +75,7 @@ def main():
     residual = frame.target.to_numpy() - frame.M3_pred_bloque.to_numpy()
     residual_rf.fit(x[train], residual[train])
     pred = np.maximum(0, frame.M3_pred_bloque.to_numpy()[valid] + residual_rf.predict(x[valid]))
-    pd.DataFrame({"real": frame.target[valid].to_numpy(), "pred": pred}).to_csv(
+    trace.assign(pred=pred).to_csv(
         evaluation / "predictions_rf_residual_m3_feno.csv", index=False)
     rows.append({"experiment_id": "RF_RESIDUAL_M3_FENO", "split": "VALIDATION", "causal": True,
                  "n": int(valid.sum()), **metrics(frame.target[valid], pd.Series(pred))})
@@ -89,7 +92,9 @@ def main():
         h_pred.append(pd.DataFrame({"finca": frame.loc[mask_valid, "finca"].to_numpy(),
             "bloque": frame.loc[mask_valid, "bloque"].to_numpy(),
             "fecha_origen": frame.loc[mask_valid, "fecha_origen"].to_numpy(),
-            "real": frame.target[mask_valid].to_numpy(), "pred": model.predict(x[mask_valid])}))
+            "fecha_objetivo": frame.loc[mask_valid, "fecha_objetivo"].to_numpy(),
+            "horizonte_dia": horizon, "real": frame.target[mask_valid].to_numpy(),
+            "pred": model.predict(x[mask_valid])}))
     h_frame = pd.concat(h_pred, ignore_index=True)
     h_frame.to_csv(evaluation / "predictions_rf_h1_h7_feno.csv", index=False)
     rows.append({"experiment_id": "RF_H1_H7_FENO", "split": "VALIDATION", "causal": True,
