@@ -25,7 +25,7 @@ def split_frame(frame, windows, cfg):
     n_train = max(cfg["evaluation"]["min_train_windows"], int(len(origins) * .60))
     keys = set(map(tuple, origins.iloc[:n_train].itertuples(index=False, name=None)))
     valid = np.array([tuple(x) in keys for x in zip(frame.finca, frame.bloque, frame.fecha_origen)])
-    return ~valid, valid
+    return valid, ~valid
 
 
 def score(y, pred, frame):
