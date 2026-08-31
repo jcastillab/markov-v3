@@ -215,8 +215,8 @@ def build_workbook(root: Path) -> Path:
         daily_frames.append(daily)
         weekly = daily.groupby(["modelo", "finca", "semana_proyeccion"], as_index=False).agg(
             fecha_origen=("fecha_origen", "min"), real_semana=("real", "sum"), proyectado_semana=("proyectado", "sum"), dias_pronosticados=("fecha_objetivo", "nunique"),
-            dias_reales=("real", "count"))
-        weekly["estado_ventana"] = np.select([weekly.dias_reales.eq(0), weekly.dias_reales.eq(7)], ["PENDIENTE_REAL", "VALIDA"], default="PARCIAL")
+            filas_pronosticadas=("real", "size"), filas_reales=("real", "count"))
+        weekly["estado_ventana"] = np.select([weekly.filas_reales.eq(0), weekly.filas_reales.eq(weekly.filas_pronosticadas)], ["PENDIENTE_REAL", "VALIDA"], default="PARCIAL")
         weekly["ratio_proyeccion_pct"] = np.where(weekly.estado_ventana.eq("VALIDA") & weekly.real_semana.ne(0), weekly.proyectado_semana / weekly.real_semana, np.nan)
         weekly["acierto_pct"] = np.where(weekly.ratio_proyeccion_pct.notna(), weekly.ratio_proyeccion_pct, np.nan)
         weekly["indicador_semanal"] = weekly.ratio_proyeccion_pct.map(weekly_status)

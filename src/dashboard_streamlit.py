@@ -27,11 +27,12 @@ def load_data():
     daily = pd.concat(daily, ignore_index=True) if daily else pd.DataFrame()
     weekly = (daily.groupby(["modelo", "finca", "semana_proyeccion"], as_index=False)
               .agg(fecha_origen=("fecha_origen", "min"), real=("real", "sum"),
-                   proyectado=("proyectado", "sum"), dias=("fecha_objetivo", "nunique"), dias_reales=("real", "count")))
+                   proyectado=("proyectado", "sum"), dias=("fecha_objetivo", "nunique"),
+                   filas_pronosticadas=("real", "size"), filas_reales=("real", "count")))
     weekly["estado_ventana"] = pd.Series(pd.NA, index=weekly.index, dtype="string")
-    weekly.loc[weekly.dias_reales.eq(0), "estado_ventana"] = "PENDIENTE_REAL"
-    weekly.loc[weekly.dias_reales.eq(7), "estado_ventana"] = "VALIDA"
-    weekly.loc[weekly.dias_reales.between(1, 6), "estado_ventana"] = "PARCIAL"
+    weekly.loc[weekly.filas_reales.eq(0), "estado_ventana"] = "PENDIENTE_REAL"
+    weekly.loc[weekly.filas_reales.eq(weekly.filas_pronosticadas), "estado_ventana"] = "VALIDA"
+    weekly.loc[weekly.filas_reales.between(1, weekly.filas_pronosticadas - 1), "estado_ventana"] = "PARCIAL"
     weekly["acierto_pct"] = 1 - (weekly["real"] - weekly["proyectado"]) / weekly["real"].where(weekly.estado_ventana.eq("VALIDA") & weekly["real"].ne(0))
     weekly["estado"] = weekly["acierto_pct"].map(weekly_status)
     return metrics, daily, weekly
