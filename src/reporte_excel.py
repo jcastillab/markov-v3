@@ -76,7 +76,7 @@ def _traces(root: Path) -> dict[str, pd.DataFrame]:
         if not path.exists():
             continue
         frame = pd.read_csv(path)
-        pred_col = "pred_bloque" if "pred_bloque" in frame else "pred"
+        pred_col = "pred_bloque" if "pred_bloque" in frame else ("pred" if "pred" in frame else "proyectado")
         real_col = "real"
         if real_col not in frame or pred_col not in frame:
             continue
