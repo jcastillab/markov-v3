@@ -52,6 +52,8 @@ def main():
             min_samples_leaf=rf_cfg["min_samples_leaf_grid"][0], min_samples_split=rf_cfg["min_samples_split_grid"][0],
             max_features=rf_cfg["max_features"][0], random_state=rf_cfg["random_state"], n_jobs=-1)
         rf.fit(x[train], frame.target[train]); pred = rf.predict(x[valid])
+        pd.DataFrame({"real": frame.target[valid].to_numpy(), "pred": pred}).to_csv(
+            evaluation / f"predictions_{name.lower()}.csv", index=False)
         rows.append({"experiment_id": f"RF_DIARIO_POOLED_{name}", "split": "VALIDATION", "causal": True,
                      "n": int(valid.sum()), **metrics(frame.target[valid], pd.Series(pred))})
         importance = permutation_importance(rf, x[valid], frame.target[valid], n_repeats=5,
@@ -70,6 +72,8 @@ def main():
     residual = frame.target.to_numpy() - frame.M3_pred_bloque.to_numpy()
     residual_rf.fit(x[train], residual[train])
     pred = np.maximum(0, frame.M3_pred_bloque.to_numpy()[valid] + residual_rf.predict(x[valid]))
+    pd.DataFrame({"real": frame.target[valid].to_numpy(), "pred": pred}).to_csv(
+        evaluation / "predictions_rf_residual_m3_feno.csv", index=False)
     rows.append({"experiment_id": "RF_RESIDUAL_M3_FENO", "split": "VALIDATION", "causal": True,
                  "n": int(valid.sum()), **metrics(frame.target[valid], pd.Series(pred))})
     # Ablacion de horizonte: siete RF independientes y suma semanal equivalente.
@@ -87,6 +91,7 @@ def main():
             "fecha_origen": frame.loc[mask_valid, "fecha_origen"].to_numpy(),
             "real": frame.target[mask_valid].to_numpy(), "pred": model.predict(x[mask_valid])}))
     h_frame = pd.concat(h_pred, ignore_index=True)
+    h_frame.to_csv(evaluation / "predictions_rf_h1_h7_feno.csv", index=False)
     rows.append({"experiment_id": "RF_H1_H7_FENO", "split": "VALIDATION", "causal": True,
                  "n": len(h_frame), **metrics(h_frame.real, h_frame.pred)})
     weekly = h_frame.groupby(["finca", "bloque", "fecha_origen"], as_index=False).agg(
