@@ -140,6 +140,9 @@ pruning:
   lag_days_max: 98
   priority_lags_days: [42, 49, 56, 63, 70, 77, 84]
   kernel_window_weeks: [8, 12]
+  response_window_days: [7, 14]
+  effect_scale: 100000.0
+  coefficient_grid: [0.0, 0.01, 0.02, 0.05, 0.10]
 
 # --------------------------------------------------------------------------
 # Semi Markov (prompt seccion 16)

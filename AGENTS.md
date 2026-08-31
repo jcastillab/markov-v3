@@ -57,7 +57,7 @@ outputs/                 Generado (gitignored): data_quality, datasets,
 | 1 | Capa canónica: dims, fact_bloque_dia, forecast_windows | **CERRADA** |
 | 2 | M3 baseline + calibración causal ingreso RC | **CERRADA** |
 | 3 | P32: M3_P32 + Semi Markov corregido (x0 por edad) | **CERRADA** |
-| 4 | Podas: análisis lags + M3+poda | pendiente |
+| 4 | Podas: análisis lags + M3+poda | **CERRADA** |
 | 5 | Clima: VPD/GDD/DLI correctos + M3+clima (PRADERA) | pendiente |
 | 6 | GLM NB + Random Forest + residual M3 | pendiente |
 | 7 | Bayes: Dirichlet-Multinomial, NB jerárquico | pendiente |
