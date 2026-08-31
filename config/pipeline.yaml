@@ -51,16 +51,19 @@ farm_aliases:
 # M3: modelo Markov baseline (prompt seccion 11)
 # --------------------------------------------------------------------------
 m3:
+  baseline_ingress: 0.20
   ingress_grid: [0.00, 0.05, 0.10, 0.12, 0.15, 0.20]
   periods:
     - name: ABRIL
       source_key: fenologia_abril
       sheets: [Abril, Junio]
+      fecha_inicio_vigencia: 2026-04-01
+      fecha_fin_vigencia: 2026-06-30
     - name: JULIO
       source_key: fenologia_julio
       sheets: [JULIO]
-  # vigencia: se resuelve en Fase 2 con evidencia; NO hardcodear fechas aqui
-  # hasta definir fecha_inicio_vigencia / fecha_fin_vigencia por periodo
+      fecha_inicio_vigencia: 2026-07-01
+      fecha_fin_vigencia: 2026-12-31
 
 # --------------------------------------------------------------------------
 # Fenologia: cadena macroestados (prompt seccion 5.2)
