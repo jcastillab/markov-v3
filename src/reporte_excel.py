@@ -133,6 +133,9 @@ def _write_table(ws, frame: pd.DataFrame, title: str, percent_columns=()):
         if col in percent_columns:
             for cell in ws[get_column_letter(i)][2:]:
                 cell.number_format = "0.00%"
+        if col in {"proyectado", "proyectado_semana", "proyectado_semana_total"}:
+            for cell in ws[get_column_letter(i)][2:]:
+                cell.number_format = "0"
     return len(frame) + 2
 
 
