@@ -26,14 +26,14 @@ def load_data():
         daily.append(frame)
     daily = pd.concat(daily, ignore_index=True) if daily else pd.DataFrame()
     weekly = (daily.groupby(["modelo", "finca", "semana_proyeccion"], as_index=False)
-              .agg(fecha_origen=("fecha_origen", "min"), real=("real", "sum"),
+              .agg(fecha_origen=("fecha_origen", "min"), real=("real", lambda s: s.sum(min_count=1)),
                    proyectado=("proyectado", "sum"), dias=("fecha_objetivo", "nunique"),
                    filas_pronosticadas=("real", "size"), filas_reales=("real", "count")))
     weekly["estado_ventana"] = pd.Series(pd.NA, index=weekly.index, dtype="string")
     weekly.loc[weekly.filas_reales.eq(0), "estado_ventana"] = "PENDIENTE_REAL"
     weekly.loc[weekly.filas_reales.eq(weekly.filas_pronosticadas), "estado_ventana"] = "VALIDA"
     weekly.loc[weekly.filas_reales.between(1, weekly.filas_pronosticadas - 1), "estado_ventana"] = "PARCIAL"
-    weekly["acierto_pct"] = 1 - (weekly["real"] - weekly["proyectado"]) / weekly["real"].where(weekly.estado_ventana.eq("VALIDA") & weekly["real"].ne(0))
+    weekly["acierto_pct"] = 1 - (weekly["real"] - weekly["proyectado"]) / weekly["real"].where(weekly.filas_reales.gt(0) & weekly["real"].ne(0))
     weekly["estado"] = weekly["acierto_pct"].map(weekly_status)
     return metrics, daily, weekly
 
@@ -68,22 +68,24 @@ accuracy = (1 - (filtered.real.sum() - filtered.proyectado.sum()) / filtered.rea
 c_week = weekly.copy()
 if model != "Todos": c_week = c_week[c_week.modelo.eq(model)]
 if farm != "Todas": c_week = c_week[c_week.finca.eq(farm)]
+weeks_observed = c_week[c_week.filas_reales.gt(0)]
 weeks_valid = c_week[c_week.estado_ventana.eq("VALIDA")]
-hits = int(weeks_valid.acierto_pct.between(.93, 1.07, inclusive="both").sum())
-near = int((weeks_valid.acierto_pct.between(.90, .93, inclusive="left") | weeks_valid.acierto_pct.between(1.07, 1.10, inclusive="right")).sum())
-miss = int(len(weeks_valid) - hits - near)
+weeks_partial = c_week[c_week.estado_ventana.eq("PARCIAL")]
+hits = int(weeks_observed.acierto_pct.between(.93, 1.07, inclusive="both").sum())
+near = int((weeks_observed.acierto_pct.between(.90, .93, inclusive="left") | weeks_observed.acierto_pct.between(1.07, 1.10, inclusive="right")).sum())
+miss = int(len(weeks_observed) - hits - near)
 pending = int(c_week.estado_ventana.eq("PENDIENTE_REAL").sum())
 partial = int(c_week.estado_ventana.eq("PARCIAL").sum())
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("WAPE", f"{wape:.2%}" if pd.notna(wape) else "N.A.")
 c2.metric("Acierto relativo medio", f"{accuracy:.2%}" if pd.notna(accuracy) else "N.A.")
 c3.metric("MAE", f"{filtered.error_abs.mean():,.0f}" if len(filtered) else "N.A.")
-c4.metric("Semanas acertadas", f"{hits} / {len(weeks_valid)}")
+c4.metric("Semanas acertadas", f"{hits} / {len(weeks_observed)}")
 c5, c6, c7 = st.columns(3)
-c5.metric("Cercanas", near); c6.metric("No acertadas", miss); c7.metric("Pendientes / parciales", f"{pending} / {partial}")
+c5.metric("Cercanas", near); c6.metric("No acertadas", miss); c7.metric("Pendientes / parciales", f"{pending} / {len(weeks_partial)}")
 
 st.subheader("Proyectado contra real")
-chart = (filtered.groupby("fecha_objetivo", as_index=True)[["real", "proyectado"]].sum()
+chart = (filtered.groupby("fecha_objetivo", as_index=True)[["real", "proyectado"]].sum(min_count=1)
          .sort_index())
 st.line_chart(chart, height=320)
 st.caption("H1-H7 es la posición del día dentro de la ventana semanal: H1 primer día, H7 séptimo día. La gráfica suma los bloques de la selección.")

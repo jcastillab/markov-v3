@@ -214,10 +214,10 @@ def build_workbook(root: Path) -> Path:
         daily["acierto_pct"] = np.where(daily.real != 0, 1 - (daily.real - daily.proyectado) / daily.real, np.nan)
         daily_frames.append(daily)
         weekly = daily.groupby(["modelo", "finca", "semana_proyeccion"], as_index=False).agg(
-            fecha_origen=("fecha_origen", "min"), real_semana=("real", "sum"), proyectado_semana=("proyectado", "sum"), dias_pronosticados=("fecha_objetivo", "nunique"),
+            fecha_origen=("fecha_origen", "min"), real_semana=("real", lambda s: s.sum(min_count=1)), proyectado_semana=("proyectado", "sum"), dias_pronosticados=("fecha_objetivo", "nunique"),
             filas_pronosticadas=("real", "size"), filas_reales=("real", "count"))
         weekly["estado_ventana"] = np.select([weekly.filas_reales.eq(0), weekly.filas_reales.eq(weekly.filas_pronosticadas)], ["PENDIENTE_REAL", "VALIDA"], default="PARCIAL")
-        weekly["ratio_proyeccion_pct"] = np.where(weekly.estado_ventana.eq("VALIDA") & weekly.real_semana.ne(0), weekly.proyectado_semana / weekly.real_semana, np.nan)
+        weekly["ratio_proyeccion_pct"] = np.where(weekly.filas_reales.gt(0) & weekly.real_semana.ne(0), weekly.proyectado_semana / weekly.real_semana, np.nan)
         weekly["acierto_pct"] = np.where(weekly.ratio_proyeccion_pct.notna(), weekly.ratio_proyeccion_pct, np.nan)
         weekly["indicador_semanal"] = weekly.ratio_proyeccion_pct.map(weekly_status)
         weekly_frames.append(weekly)
@@ -273,6 +273,22 @@ def build_workbook(root: Path) -> Path:
     ws = wb.create_sheet("CONTROL_RF_GLM")
     end = _write_table(ws, pd.DataFrame(control_rows), "Control: métricas recalculadas desde predicciones trazables", {"wape_recalculado", "acierto_relativo_medio"})
     _add_semaphores(ws, end, list(pd.DataFrame(control_rows).columns))
+
+    observed_rows = []
+    for model, frame in traces.items():
+        observed = frame[frame.real.notna() & frame.proyectado.notna()]
+        if observed.empty:
+            continue
+        error = observed.proyectado - observed.real
+        denom = observed.real.abs().sum()
+        observed_rows.append({"modelo": model, "alcance": "todos los reales disponibles", "n": len(observed),
+                              "wape": error.abs().sum() / denom if denom else np.nan,
+                              "mae": error.abs().mean(), "rmse": np.sqrt((error ** 2).mean()),
+                              "acierto_pct": (1 - (observed.real - observed.proyectado) / observed.real).where(observed.real.ne(0)).mean()})
+    ws = wb.create_sheet("METRICAS_OBSERVADAS")
+    observed_frame = pd.DataFrame(observed_rows)
+    end = _write_table(ws, observed_frame, "Métricas usando todos los días con real disponible, incluidas ventanas parciales", {"wape", "acierto_pct"})
+    _add_semaphores(ws, end, list(observed_frame.columns))
 
     bayes_cols = [c for c in ("experiment_id", "wape", "coverage_interval_80", "coverage_interval_95", "ancho_medio_intervalo", "n") if c in metrics]
     ws = wb.create_sheet("BAYES")
