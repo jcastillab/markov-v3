@@ -85,6 +85,9 @@ def _traces(root: Path) -> dict[str, pd.DataFrame]:
         for col in ("fecha_origen", "fecha_objetivo"):
             if col in frame:
                 frame[col] = pd.to_datetime(frame[col]).dt.date
+        if "semana_proyeccion" not in frame and "fecha_objetivo" in frame:
+            dates = pd.to_datetime(frame["fecha_objetivo"])
+            frame["semana_proyeccion"] = dates.dt.isocalendar().year * 100 + dates.dt.isocalendar().week
         result[model] = frame
     return result
 
@@ -201,7 +204,7 @@ def build_workbook(root: Path) -> Path:
     expected = set()
     if "E00_M3_BASE" in traces:
         base = traces["E00_M3_BASE"]
-        expected = set(map(tuple, base[["finca", "bloque", "fecha_origen"]].drop_duplicates().itertuples(index=False, name=None)))
+        expected = set(map(tuple, base[["finca", "semana_proyeccion"]].drop_duplicates().itertuples(index=False, name=None)))
     coverage_rows, weekly_frames, daily_frames = [], [], []
     for model, frame in traces.items():
         if not {"finca", "bloque", "fecha_origen", "fecha_objetivo"}.issubset(frame.columns):
@@ -210,8 +213,8 @@ def build_workbook(root: Path) -> Path:
         daily["error_abs"] = daily.error.abs(); daily["ratio_proyeccion_pct"] = np.where(daily.real != 0, daily.proyectado / daily.real, np.nan)
         daily["acierto_pct"] = np.where(daily.real != 0, 1 - (daily.real - daily.proyectado) / daily.real, np.nan)
         daily_frames.append(daily)
-        weekly = daily.groupby(["modelo", "finca", "fecha_origen"], as_index=False).agg(
-            real_semana=("real", "sum"), proyectado_semana=("proyectado", "sum"), dias_pronosticados=("fecha_objetivo", "nunique"),
+        weekly = daily.groupby(["modelo", "finca", "semana_proyeccion"], as_index=False).agg(
+            fecha_origen=("fecha_origen", "min"), real_semana=("real", "sum"), proyectado_semana=("proyectado", "sum"), dias_pronosticados=("fecha_objetivo", "nunique"),
             dias_reales=("real", "count"))
         weekly["estado_ventana"] = np.select([weekly.dias_reales.eq(0), weekly.dias_reales.eq(7)], ["PENDIENTE_REAL", "VALIDA"], default="PARCIAL")
         weekly["ratio_proyeccion_pct"] = np.where(weekly.estado_ventana.eq("VALIDA") & weekly.real_semana.ne(0), weekly.proyectado_semana / weekly.real_semana, np.nan)
@@ -219,8 +222,8 @@ def build_workbook(root: Path) -> Path:
         weekly["indicador_semanal"] = weekly.ratio_proyeccion_pct.map(weekly_status)
         weekly_frames.append(weekly)
         for finca, finca_weekly in weekly.groupby("finca"):
-            expected_finca = {key[2] for key in expected if key[0] == finca}
-            found = set(finca_weekly.fecha_origen)
+            expected_finca = {key[1] for key in expected if key[0] == finca}
+            found = set(finca_weekly.semana_proyeccion)
             coverage_rows.append({"modelo": model, "finca": finca, "semanas_esperadas": len(expected_finca), "semanas_con_pronostico": len(found),
                               "semanas_sin_pronostico": len(expected_finca - found),
                               "aciertos_verdes": int(finca_weekly.indicador_semanal.eq("ACIERTO").sum()),

@@ -25,8 +25,8 @@ def load_data():
         frame["error_abs"] = (frame["proyectado"] - frame["real"]).abs()
         daily.append(frame)
     daily = pd.concat(daily, ignore_index=True) if daily else pd.DataFrame()
-    weekly = (daily.groupby(["modelo", "finca", "fecha_origen"], as_index=False)
-              .agg(semana_proyeccion=("semana_proyeccion", "first"), real=("real", "sum"),
+    weekly = (daily.groupby(["modelo", "finca", "semana_proyeccion"], as_index=False)
+              .agg(fecha_origen=("fecha_origen", "min"), real=("real", "sum"),
                    proyectado=("proyectado", "sum"), dias=("fecha_objetivo", "nunique"), dias_reales=("real", "count")))
     weekly["estado_ventana"] = pd.Series(pd.NA, index=weekly.index, dtype="string")
     weekly.loc[weekly.dias_reales.eq(0), "estado_ventana"] = "PENDIENTE_REAL"
