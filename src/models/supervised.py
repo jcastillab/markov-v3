@@ -44,7 +44,7 @@ def build_supervised_dataset(windows, fact, intervals, cfg, pruning=None, climat
             cache[key] = float(simulate(matrix, x0, lead, cfg["m3"]["baseline_ingress"]).iloc[-1].PC_dia_muestra)
         row = {"finca": w.finca, "bloque": w.bloque, "fecha_origen": w.fecha_origen,
                "fecha_objetivo": w.fecha_objetivo, "semana_proyeccion": w.semana_proyeccion,
-               "horizonte_dia": w.horizonte_dia,
+               "horizonte_dia": w.horizonte_dia, "estado_ventana": w.estado_ventana,
                "semana_objetivo": w.semana_objetivo, "target": w.corte_real_dia,
                "RC_t0": w.conteo_RC_t0, "SS_t0": w.conteo_SS_t0, "AP_t0": w.conteo_AP_t0,
                "CO_t0": w.conteo_CO_t0, "TOTAL_t0": w.conteo_total_t0,
