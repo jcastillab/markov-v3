@@ -240,7 +240,7 @@ def build_workbook(root: Path) -> Path:
                               "no_aciertos_rojos": int(finca_weekly.indicador_semanal.eq("NO ACIERTO").sum()),
                               "estado_trazabilidad": "TRAZABLE"})
     covered = {r["modelo"] for r in coverage_rows}
-    for model in metrics.experiment_id.drop_duplicates():
+    for model in metrics.experiment_id.dropna().drop_duplicates():
         if model not in covered:
             coverage_rows.append({"modelo": model, "finca": "TODAS", "semanas_esperadas": np.nan, "semanas_con_pronostico": np.nan,
                                   "semanas_sin_pronostico": np.nan, "aciertos_verdes": np.nan, "cerca_amarillos": np.nan,
@@ -310,7 +310,9 @@ def build_workbook(root: Path) -> Path:
     ws = wb.create_sheet("PARAMETROS"); _write_table(ws, pd.DataFrame(parameter_rows), "Parámetros vigentes: config/pipeline.yaml")
 
     model_rows = []
-    for model in metrics.experiment_id.drop_duplicates():
+    model_names = [model for model in metrics.experiment_id.drop_duplicates() if pd.notna(model)]
+    model_names += [model for model in metrics.get("modelo", pd.Series(dtype=object)).drop_duplicates() if pd.notna(model)]
+    for model in dict.fromkeys(model_names):
         family, mechanism, caution = _model_note(model)
         model_rows.append({"modelo": model, "familia": family, "como_pronostica": mechanism, "ventajas_y_limites": caution})
     ws = wb.create_sheet("MODELOS"); _write_table(ws, pd.DataFrame(model_rows), "Ficha funcional por modelo")
