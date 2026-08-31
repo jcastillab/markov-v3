@@ -121,6 +121,8 @@ def _model_note(model: str) -> tuple[str, str, str]:
         return ("GLM Negative Binomial", "Regresión directa NB2 con enlace log y features causales.", "Control interpretable; inestable con escala/colinealidad actual.")
     if model == "NB_JERARQUICO":
         return ("NB jerárquico", "Pooling Gamma-Poisson por finca, bloque y horizonte hacia media global.", "Mejora WAPE; cobertura predictiva insuficiente.")
+    if model == "NB_JERARQUICO_COVARIABLES":
+        return ("NB jerárquico con covariables", "Pooling progresivo con offset de camas, fenología e historial diario causal.", "Challenger bayesiano; validar dispersión y cobertura por finca.")
     if model == "M3_DIRICHLET_MULTINOMIAL":
         return ("M3 Bayes Dirichlet", "Muestrea matrices posteriores Dirichlet centradas en M3 causal.", "Regulariza transiciones; no mejora WAPE ni cobertura aún.")
     return ("Experimental", "Ver hoja PARAMETROS.", "Revisar alcance y causalidad.")

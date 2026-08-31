@@ -112,6 +112,7 @@ class CovariateHierarchicalNB:
     def fit(self, frame, features=()):
         data = frame.copy()
         data[self.exposure] = pd.to_numeric(data[self.exposure], errors="coerce").fillna(0).clip(lower=1)
+        data["log_exposure"] = np.log(data[self.exposure])
         self.global_rate = float(data.target.sum() / data[self.exposure].sum())
         self.farm = self._rates(data, ["finca"], self.exposure)
         self.block = self._rates(data, ["finca", "bloque"], self.exposure)
@@ -131,9 +132,9 @@ class CovariateHierarchicalNB:
         else:
             self.coef_ = np.zeros(1)
             fitted = baseline
-        ratio = data.target.to_numpy(float) / np.maximum(fitted, 1e-6)
-        self.alpha = max((float(np.var(ratio)) - 1 / max(float(fitted.mean()), 1e-6)) /
-                         max(float(fitted.mean()) ** 2, 1e-6), 1e-6)
+        y = data.target.to_numpy(float)
+        mu = np.maximum(fitted, 1e-6)
+        self.alpha = max(float(np.sum((y - mu) ** 2 - mu) / np.sum(mu ** 2)), 0.01)
         return self
 
     def _baseline(self, frame):
@@ -152,7 +153,10 @@ class CovariateHierarchicalNB:
         baseline = self._baseline(frame)
         if not self.features:
             return baseline
-        x = ((frame[self.features].apply(pd.to_numeric, errors="coerce") - self.feature_mean) /
+        data = frame.copy()
+        data[self.exposure] = pd.to_numeric(data[self.exposure], errors="coerce").fillna(0).clip(lower=1)
+        data["log_exposure"] = np.log(data[self.exposure])
+        x = ((data[self.features].apply(pd.to_numeric, errors="coerce") - self.feature_mean) /
              self.feature_scale).fillna(0).to_numpy(float)
         x = np.column_stack([np.ones(len(x)), x])
         return baseline * np.exp(np.clip(x @ self.coef_, -3, 3))

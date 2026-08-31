@@ -43,6 +43,7 @@ def main():
     bayes_features = ["RC_t0", "SS_t0", "AP_t0", "p_RC", "p_SS", "p_AP", "TOTAL_t0",
                       "factor_extrapolacion", "corte_lag_1d", "corte_lag_2d", "corte_lag_3d",
                       "corte_sum_3d", "corte_sum_7d", "corte_sum_14d", "corte_mean_7d",
+                      "log_exposure",
                       "horizonte_dia", "semana_del_año", "periodo_ABRIL_JULIO"]
     cov_nb = CovariateHierarchicalNB(cfg["bayes"]["hierarchical_shrinkage"],
                                      cfg["bayes"].get("covariate_ridge", 1.0)).fit(train, bayes_features)
