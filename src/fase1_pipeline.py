@@ -23,7 +23,9 @@ def main() -> None:
     for name, frame in dimensions.items():
         frame.to_parquet(out / f"{name}.parquet", index=False)
     qa = build_qa_join_coverage(fact, windows)
-    qa.to_csv(root / "outputs" / "data_quality" / "qa_join_coverage.csv", index=False)
+    qa_dir = root / cfg["paths"]["outputs"] / "data_quality"
+    qa_dir.mkdir(parents=True, exist_ok=True)
+    qa.to_csv(qa_dir / "qa_join_coverage.csv", index=False)
     print(f"fact_bloque_dia: {len(fact):,} filas")
     print(f"forecast_windows: {len(windows):,} filas")
     print(f"ventanas evaluables: {windows.groupby(['finca','bloque','fecha_origen']).ventana_evaluable.first().sum():,}")
