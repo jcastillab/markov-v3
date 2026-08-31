@@ -156,6 +156,10 @@ def _add_semaphores(ws, row_end: int, headers: list[str]):
             col = get_column_letter(lookup[label]); ws.conditional_formatting.add(
                 f"{col}3:{col}{row_end}", ColorScaleRule(start_type="min", start_color=GREEN,
                 mid_type="percentile", mid_value=50, mid_color=YELLOW, end_type="max", end_color=RED))
+    if "r2" in lookup:
+        col = get_column_letter(lookup["r2"])
+        ws.conditional_formatting.add(f"{col}3:{col}{row_end}", ColorScaleRule(start_type="min", start_color=RED,
+            mid_type="percentile", mid_value=50, mid_color=YELLOW, end_type="max", end_color=GREEN))
     if "acierto_pct" in lookup:
         col = get_column_letter(lookup["acierto_pct"]); rng = f"{col}3:{col}{row_end}"
         ws.conditional_formatting.add(rng, CellIsRule(operator="between", formula=["0.93", "1.07"], fill=PatternFill("solid", fgColor=GREEN)))
@@ -192,7 +196,7 @@ def build_workbook(root: Path) -> Path:
 
     primary = metrics[metrics.comparacion_primaria].sort_values("wape").drop_duplicates("experiment_id").copy()
     primary["wape_pct"] = primary.wape; primary["acierto_pct"] = primary.experiment_id.map(acierto_by_model)
-    summary_cols = ["experiment_id", "wape_pct", "acierto_pct", "mae", "rmse", "bias_pct", "n"]
+    summary_cols = ["experiment_id", "wape_pct", "acierto_pct", "mae", "rmse", "r2", "bias_pct", "n"]
     ws = wb.create_sheet("RESUMEN")
     end = _write_table(ws, primary[summary_cols], "Ranking primario: VALIDATION causal diaria n=714", {"wape_pct", "acierto_pct", "bias_pct"})
     ws.conditional_formatting.add(f"B3:B{end}", ColorScaleRule(start_type="min", start_color=GREEN, mid_type="percentile", mid_value=50, mid_color=YELLOW, end_type="max", end_color=RED))

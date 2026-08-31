@@ -108,7 +108,7 @@ with left:
 with right:
     st.subheader("Ranking primario")
     ranking = metrics[metrics.comparacion_primaria].sort_values("wape").drop_duplicates("experiment_id")
-    st.dataframe(ranking[["experiment_id", "wape", "mae", "rmse", "bias_pct", "n"]],
+    st.dataframe(ranking[["experiment_id", "wape", "mae", "rmse", "r2", "bias_pct", "n"]],
                  use_container_width=True, hide_index=True)
 
 st.subheader("Detalle diario")
