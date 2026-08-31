@@ -58,7 +58,7 @@ def main():
     rows.append({"experiment_id": "M3_DIRICHLET_MULTINOMIAL", "split": "VALIDATION", "causal": True,
                  "coverage_interval_80": np.mean((real >= lows) & (real <= highs)),
                  "coverage_interval_95": np.nan, "ancho_medio_intervalo": float(np.mean(highs - lows)), **d_metrics})
-    trace = valid[["finca", "bloque", "fecha_origen", "fecha_objetivo", "horizonte_dia"]].reset_index(drop=True)
+    trace = valid[["finca", "bloque", "fecha_origen", "fecha_objetivo", "semana_proyeccion", "horizonte_dia"]].reset_index(drop=True)
     trace.assign(real=real, pred=pred, low80=lows, high80=highs).to_csv(
         evaluation / "predictions_m3_dirichlet.csv", index=False)
     trace.assign(real=valid.target.to_numpy(), pred=pred_nb,

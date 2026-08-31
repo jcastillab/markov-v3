@@ -38,7 +38,7 @@ def main():
     numeric = frame.select_dtypes(include=[np.number]).columns
     x_base = frame[numeric].replace([np.inf, -np.inf], np.nan).fillna(0)
     rows = []
-    trace_columns = ["finca", "bloque", "fecha_origen", "fecha_objetivo", "horizonte_dia", "target"]
+    trace_columns = ["finca", "bloque", "fecha_origen", "fecha_objetivo", "semana_proyeccion", "horizonte_dia", "target"]
     trace = frame.loc[valid, trace_columns].reset_index(drop=True).rename(columns={"target": "real"})
     for name, cols in groups.items():
         cols = list(dict.fromkeys(c for c in cols if c in x_base.columns))
@@ -93,6 +93,7 @@ def main():
             "bloque": frame.loc[mask_valid, "bloque"].to_numpy(),
             "fecha_origen": frame.loc[mask_valid, "fecha_origen"].to_numpy(),
             "fecha_objetivo": frame.loc[mask_valid, "fecha_objetivo"].to_numpy(),
+            "semana_proyeccion": frame.loc[mask_valid, "semana_proyeccion"].to_numpy(),
             "horizonte_dia": horizon, "real": frame.target[mask_valid].to_numpy(),
             "pred": model.predict(x[mask_valid])}))
     h_frame = pd.concat(h_pred, ignore_index=True)

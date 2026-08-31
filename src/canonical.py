@@ -198,7 +198,8 @@ def build_forecast_windows(fact: pd.DataFrame, horizon_days: int = 7) -> pd.Data
             rows.append({"finca": row["finca"], "bloque": row["bloque"],
                          "fecha_origen": row["fecha_conteo_origen"],
                          "semana_origen": row["semana_iso"],
-                         "semana_objetivo": int(date.isocalendar().year * 100 + date.isocalendar().week),
+                          "semana_objetivo": int(date.isocalendar().year * 100 + date.isocalendar().week),
+                          "semana_proyeccion": int(date.isocalendar().year * 100 + date.isocalendar().week),
                          "fecha_objetivo": date, "horizonte_dia": h,
                          "conteo_RC_t0": row["conteo_RC_origen"],
                          "conteo_SS_t0": row["conteo_SS_origen"],
@@ -218,7 +219,12 @@ def build_forecast_windows(fact: pd.DataFrame, horizon_days: int = 7) -> pd.Data
               .agg(corte_real_semana=("corte_real_dia", "sum"), n_dias_reales=("corte_real_dia", "count")))
     windows = windows.drop(columns="corte_real_semana").merge(
         weekly, on=["finca", "bloque", "fecha_origen"], how="left", validate="many_to_one")
-    windows["ventana_evaluable"] = windows["n_dias_reales"].eq(horizon_days)
+    windows["dias_reales_disponibles"] = windows["n_dias_reales"]
+    windows["ventana_evaluable"] = windows["dias_reales_disponibles"].eq(horizon_days)
+    window_state = np.select(
+        [windows["dias_reales_disponibles"].eq(0), windows["ventana_evaluable"]],
+        ["PENDIENTE_REAL", "VALIDA"], default="PARCIAL")
+    windows["estado_ventana"] = window_state
     windows["motivo_no_evaluable"] = np.where(
         windows["ventana_evaluable"], None, "faltan_dias_reales_en_horizonte")
     return windows.drop(columns="n_dias_reales")

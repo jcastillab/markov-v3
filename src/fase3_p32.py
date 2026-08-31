@@ -29,7 +29,8 @@ def _predict(row, intervals, cfg, model, alpha, semimarkov=False):
     last = result.iloc[-1]
     return {"finca": row["finca"], "bloque": row["bloque"],
             "fecha_origen": origin, "fecha_objetivo": target,
-            "horizonte_dia": row["horizonte_dia"],
+             "horizonte_dia": row["horizonte_dia"],
+             "semana_proyeccion": row["semana_proyeccion"],
             "pred_bloque": last["PC_dia_muestra"] * row["factor_extrapolacion_t0"],
             "real": row["corte_real_dia"], "causal": False,
             "evaluacion_causal": False, "fecha_max_dato_modelo": pd.Timestamp("2026-08-20")}
