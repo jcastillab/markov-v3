@@ -28,6 +28,7 @@ def predict_window(row: pd.Series, intervals: pd.DataFrame, cfg: dict,
              "fecha_origen": origin, "fecha_objetivo": target,
              "horizonte_dia": row["horizonte_dia"],
              "semana_proyeccion": row["semana_proyeccion"],
+             "estado_ventana": row.get("estado_ventana", "VALIDA"),
              "pred_muestra": float(out["PC_dia_muestra"]),
              "pred_bloque": float(out["PC_dia_muestra"] * row["factor_extrapolacion_t0"]),
              "real": row["corte_real_dia"], "alpha_ingreso_RC": alpha,
@@ -94,6 +95,9 @@ def main() -> None:
     pd.DataFrame(metric_rows).to_csv(eval_dir / "metrics_fase2_m3.csv", index=False)
     pd.DataFrame(matrix_rows).to_csv(model_dir / "m3_matrix_audit.csv", index=False)
     pd.concat(predictions, ignore_index=True).to_csv(pred_dir / "predictions_m3_validation.csv", index=False)
+    operational, _ = run_experiment(windows, intervals, cfg, "E00_M3_BASE", baseline_alpha,
+                                    pd.Series(True, index=windows.index))
+    operational.to_csv(pred_dir / "E00_M3_BASE_operational.csv", index=False)
     intervals.groupby(["finca", "periodo", "estado_origen", "estado_destino", "evento"], as_index=False).size().to_csv(
         model_dir / "m3_transition_audit_counts.csv", index=False)
     manifest = {

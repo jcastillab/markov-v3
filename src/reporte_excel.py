@@ -23,7 +23,7 @@ except ModuleNotFoundError:
 GREEN, YELLOW, RED, BLUE, DARK = "C6EFCE", "FFEB9C", "FFC7CE", "D9EAF7", "1F4E78"
 
 PREDICTION_FILES = {
-    "E00_M3_BASE": "outputs/predictions/E00_M3_BASE.csv",
+    "E00_M3_BASE": "outputs/predictions/E00_M3_BASE_operational.csv",
     "E01_M3_INGRESO_CALIBRADO": "outputs/predictions/E01_M3_INGRESO_CALIBRADO.csv",
     "E02_M3_P32_RAW": "outputs/predictions/E02_M3_P32_RAW.csv",
     "E03_M3_P32_CANONICO": "outputs/predictions/E03_M3_P32_CANONICO.csv",
@@ -211,9 +211,11 @@ def build_workbook(root: Path) -> Path:
         daily["acierto_pct"] = np.where(daily.real != 0, 1 - (daily.real - daily.proyectado) / daily.real, np.nan)
         daily_frames.append(daily)
         weekly = daily.groupby(["modelo", "finca", "fecha_origen"], as_index=False).agg(
-            real_semana=("real", "sum"), proyectado_semana=("proyectado", "sum"), dias_pronosticados=("fecha_objetivo", "nunique"))
-        weekly["ratio_proyeccion_pct"] = np.where(weekly.real_semana != 0, weekly.proyectado_semana / weekly.real_semana, np.nan)
-        weekly["acierto_pct"] = np.where(weekly.real_semana != 0, 1 - (weekly.real_semana - weekly.proyectado_semana) / weekly.real_semana, np.nan)
+            real_semana=("real", "sum"), proyectado_semana=("proyectado", "sum"), dias_pronosticados=("fecha_objetivo", "nunique"),
+            dias_reales=("real", "count"))
+        weekly["estado_ventana"] = np.select([weekly.dias_reales.eq(0), weekly.dias_reales.eq(7)], ["PENDIENTE_REAL", "VALIDA"], default="PARCIAL")
+        weekly["ratio_proyeccion_pct"] = np.where(weekly.estado_ventana.eq("VALIDA") & weekly.real_semana.ne(0), weekly.proyectado_semana / weekly.real_semana, np.nan)
+        weekly["acierto_pct"] = np.where(weekly.ratio_proyeccion_pct.notna(), weekly.ratio_proyeccion_pct, np.nan)
         weekly["indicador_semanal"] = weekly.ratio_proyeccion_pct.map(weekly_status)
         weekly_frames.append(weekly)
         for finca, finca_weekly in weekly.groupby("finca"):
@@ -255,7 +257,8 @@ def build_workbook(root: Path) -> Path:
     for model, frame in traces.items():
         if not {"real", "proyectado"}.issubset(frame.columns):
             continue
-        y, p = frame.real.to_numpy(float), frame.proyectado.to_numpy(float)
+        trace_valid = frame[frame.real.notna() & frame.proyectado.notna()]
+        y, p = trace_valid.real.to_numpy(float), trace_valid.proyectado.to_numpy(float)
         denom = np.abs(y).sum()
         calculated = {"wape_recalculado": np.abs(p - y).sum() / denom if denom else np.nan,
                       "mae_recalculado": np.abs(p - y).mean(),

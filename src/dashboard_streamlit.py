@@ -19,13 +19,20 @@ def load_data():
     for model, frame in traces.items():
         frame = frame.copy()
         frame["fecha_objetivo"] = pd.to_datetime(frame["fecha_objetivo"])
+        if "semana_proyeccion" not in frame:
+            frame["semana_proyeccion"] = frame["fecha_objetivo"].dt.isocalendar().year * 100 + frame["fecha_objetivo"].dt.isocalendar().week
         frame["acierto_pct"] = (1 - (frame["real"] - frame["proyectado"]) / frame["real"].where(frame["real"] != 0)).astype(float)
         frame["error_abs"] = (frame["proyectado"] - frame["real"]).abs()
         daily.append(frame)
     daily = pd.concat(daily, ignore_index=True) if daily else pd.DataFrame()
     weekly = (daily.groupby(["modelo", "finca", "fecha_origen"], as_index=False)
-              .agg(real=("real", "sum"), proyectado=("proyectado", "sum"), dias=("fecha_objetivo", "nunique")))
-    weekly["acierto_pct"] = 1 - (weekly["real"] - weekly["proyectado"]) / weekly["real"].where(weekly["real"] != 0)
+              .agg(semana_proyeccion=("semana_proyeccion", "first"), real=("real", "sum"),
+                   proyectado=("proyectado", "sum"), dias=("fecha_objetivo", "nunique"), dias_reales=("real", "count")))
+    weekly["estado_ventana"] = pd.Series(pd.NA, index=weekly.index, dtype="string")
+    weekly.loc[weekly.dias_reales.eq(0), "estado_ventana"] = "PENDIENTE_REAL"
+    weekly.loc[weekly.dias_reales.eq(7), "estado_ventana"] = "VALIDA"
+    weekly.loc[weekly.dias_reales.between(1, 6), "estado_ventana"] = "PARCIAL"
+    weekly["acierto_pct"] = 1 - (weekly["real"] - weekly["proyectado"]) / weekly["real"].where(weekly.estado_ventana.eq("VALIDA") & weekly["real"].ne(0))
     weekly["estado"] = weekly["acierto_pct"].map(weekly_status)
     return metrics, daily, weekly
 
@@ -43,7 +50,8 @@ if daily.empty:
     st.stop()
 
 models = sorted(daily.modelo.unique())
-model = st.sidebar.selectbox("Modelo", ["Todos"] + models)
+default_model = "RF_H1_H7_FENO" if "RF_H1_H7_FENO" in models else models[0]
+model = st.sidebar.selectbox("Modelo", models + ["Todos"], index=models.index(default_model))
 farms = sorted(daily.finca.unique())
 farm = st.sidebar.selectbox("Finca", ["Todas"] + farms)
 horizons = sorted(daily.horizonte_dia.dropna().unique()) if "horizonte_dia" in daily else []
@@ -55,16 +63,29 @@ if horizon != "Todos": filtered = filtered[filtered.horizonte_dia.eq(horizon)]
 
 denom = filtered.real.abs().sum()
 wape = filtered.error_abs.sum() / denom if denom else float("nan")
-accuracy = filtered.acierto_pct.mean()
+accuracy = (1 - (filtered.real.sum() - filtered.proyectado.sum()) / filtered.real.sum()) if filtered.real.sum() else float("nan")
+c_week = weekly.copy()
+if model != "Todos": c_week = c_week[c_week.modelo.eq(model)]
+if farm != "Todas": c_week = c_week[c_week.finca.eq(farm)]
+weeks_valid = c_week[c_week.estado_ventana.eq("VALIDA")]
+hits = int(weeks_valid.acierto_pct.between(.93, 1.07, inclusive="both").sum())
+near = int((weeks_valid.acierto_pct.between(.90, .93, inclusive="left") | weeks_valid.acierto_pct.between(1.07, 1.10, inclusive="right")).sum())
+miss = int(len(weeks_valid) - hits - near)
+pending = int(c_week.estado_ventana.eq("PENDIENTE_REAL").sum())
+partial = int(c_week.estado_ventana.eq("PARCIAL").sum())
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("WAPE", f"{wape:.2%}" if pd.notna(wape) else "N.A.")
 c2.metric("Acierto relativo medio", f"{accuracy:.2%}" if pd.notna(accuracy) else "N.A.")
 c3.metric("MAE", f"{filtered.error_abs.mean():,.0f}" if len(filtered) else "N.A.")
-c4.metric("Días trazables", f"{len(filtered):,}")
+c4.metric("Semanas acertadas", f"{hits} / {len(weeks_valid)}")
+c5, c6, c7 = st.columns(3)
+c5.metric("Cercanas", near); c6.metric("No acertadas", miss); c7.metric("Pendientes / parciales", f"{pending} / {partial}")
 
 st.subheader("Proyectado contra real")
-chart = filtered.sort_values("fecha_objetivo").set_index("fecha_objetivo")[["real", "proyectado"]]
+chart = (filtered.groupby("fecha_objetivo", as_index=True)[["real", "proyectado"]].sum()
+         .sort_index())
 st.line_chart(chart, height=320)
+st.caption("H1-H7 es la posición del día dentro de la ventana semanal: H1 primer día, H7 séptimo día. La gráfica suma los bloques de la selección.")
 
 left, right = st.columns(2)
 with left:
@@ -72,7 +93,7 @@ with left:
     week = weekly.copy()
     if model != "Todos": week = week[week.modelo.eq(model)]
     if farm != "Todas": week = week[week.finca.eq(farm)]
-    st.dataframe(week[["modelo", "finca", "fecha_origen", "real", "proyectado", "acierto_pct", "estado"]]
+    st.dataframe(week[["modelo", "finca", "fecha_origen", "semana_proyeccion", "real", "proyectado", "acierto_pct", "estado_ventana", "estado"]]
                  .sort_values("fecha_origen"), use_container_width=True, hide_index=True)
 with right:
     st.subheader("Ranking primario")
