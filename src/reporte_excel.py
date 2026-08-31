@@ -48,7 +48,7 @@ PREDICTION_FILES = {
 
 PREDICTION_FILES_FIXED = {
     **PREDICTION_FILES,
-    "E00_M3_BASE": "outputs/evaluation/E00_M3_BASE.csv",
+    "E00_M3_BASE": "outputs/predictions/E00_M3_BASE.csv",
     "RF_H1_H7_FENO": "outputs/evaluation/predictions_rf_h1_h7_feno.csv",
 }
 
