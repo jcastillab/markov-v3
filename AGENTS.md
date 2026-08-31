@@ -60,7 +60,7 @@ outputs/                 Generado (gitignored): data_quality, datasets,
 | 4 | Podas: análisis lags + M3+poda | **CERRADA** |
 | 5 | Clima: VPD/GDD/DLI correctos + M3+clima (PRADERA) | **CERRADA** |
 | 6 | GLM NB + Random Forest + residual M3 | **CERRADA** |
-| 7 | Bayes: Dirichlet-Multinomial, NB jerárquico | pendiente |
+| 7 | Bayes: Dirichlet-Multinomial, NB jerárquico | **CERRADA** |
 | 8 | Comparación final + reporte + champion/challengers | pendiente |
 
 ## Convenciones de código
