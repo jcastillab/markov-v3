@@ -1,0 +1,23 @@
+# Entorno virtual
+.venv/
+venv/
+
+# Outputs del pipeline (se regeneran)
+outputs/
+!outputs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Excel de salida generados
+*.tmp
+~$*.xlsx
+
+# OS
+Thumbs.db
+.DS_Store

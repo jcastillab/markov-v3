@@ -1,0 +1,169 @@
+# ============================================================================
+# Configuracion central del pipeline de pronostico de corte Freedom
+# Todos los parametros experimentales viven aqui (prompt maestro seccion 29)
+# ============================================================================
+
+project:
+  variety: FREEDOM
+  target_farms:
+    - ALMER
+    - LA PRADERA
+    - SANTA HELENA
+
+paths:
+  raw: data/raw
+  outputs: outputs
+  docs: docs
+
+# --------------------------------------------------------------------------
+# Fuentes de datos (archivos en data/raw)
+# --------------------------------------------------------------------------
+sources:
+  conteos_cortes: conteos_vs_cortes_multifinca.xlsx
+  camas_muestreadas: camas_muestreadas_semana.xlsx
+  plano_siembra: plano_siembra.xlsx
+  fenologia_abril: FENOLOGIAS ABRIL FREEDOM.xlsx
+  fenologia_julio: FENOLOGIAS JULIO FREEDOM.xlsx
+  fenologia_p32: Fenologias13.08Final-1.xlsx
+  podas: Podas 10.xlsx
+  clima_2025: 2025.xlsx
+  clima_2026: 2026.xlsx
+  calendario: calendario.xlsx
+  resumen_cortes: resumen_cortes_reales.xlsx
+
+forecast:
+  horizon_days: 7
+  week_start: MONDAY
+
+# --------------------------------------------------------------------------
+# Homologacion de fincas: nombre_fuente -> finca_canonica
+# --------------------------------------------------------------------------
+farm_aliases:
+  ALMER: ALMER
+  PRADERA: LA PRADERA
+  Pradera: LA PRADERA
+  LA PRADERA: LA PRADERA
+  LA PRADERA BQ P11: LA PRADERA
+  SANTA HELENA: SANTA HELENA
+  SANTA HELENA BL 7: SANTA HELENA
+
+# --------------------------------------------------------------------------
+# M3: modelo Markov baseline (prompt seccion 11)
+# --------------------------------------------------------------------------
+m3:
+  ingress_grid: [0.00, 0.05, 0.10, 0.12, 0.15, 0.20]
+  periods:
+    - name: ABRIL
+      source_key: fenologia_abril
+      sheets: [Abril, Junio]
+    - name: JULIO
+      source_key: fenologia_julio
+      sheets: [JULIO]
+  # vigencia: se resuelve en Fase 2 con evidencia; NO hardcodear fechas aqui
+  # hasta definir fecha_inicio_vigencia / fecha_fin_vigencia por periodo
+
+# --------------------------------------------------------------------------
+# Fenologia: cadena macroestados (prompt seccion 5.2)
+# SP aislado queda PENDIENTE hasta resolver contrato (seccion 4.6)
+# --------------------------------------------------------------------------
+fenologia:
+  macro_chain: [PRE_RC, RC, SS, AP, PC]
+  loss_states: [RC, SS, AP]
+  transient_states: [RC, SS, AP]
+  terminal_states: [PC, L]
+  micro_to_macro:
+    G: PRE_RC
+    DG: PRE_RC
+    RC1: RC
+    RC2: RC
+    RC3: RC
+    RC4: RC
+    RC5: RC
+    PE: RC
+    S1S: SS
+    S2S: SS
+    S3S: SS
+    S4S: SS
+    S5S: SS
+    SP1: AP
+    SP1 1/2: AP
+    SP2: AP
+    PC: PC
+    X: L
+  # Aliases de escritura -> codigo canonico (NO incluye SP aislado)
+  canonical_aliases:
+    SP 1/2: SP1 1/2
+    SP 1 1/2: SP1 1/2
+    SP1/2: SP1 1/2
+    SP 2: SP2
+    SP 1: SP1
+  # Contrato SP (docs/CONTRATOS_DATOS.md seccion 8):
+  # SP aislado -> microestado propio SP_SIN_FRACCION, macro propuesto AP,
+  # PENDIENTE_CONFIRMACION. Sus intervalos NO entran a entrenamiento.
+  sp_isolado:
+    canonico: SP_SIN_FRACCION
+    macro_propuesto: AP
+    estado_qa: PENDIENTE_CONFIRMACION
+    entra_entrenamiento: false
+  codes_pending:
+    - SP_SIN_FRACCION   # SP aislado crudo; ver contrato seccion 8
+    - SP2 1/2           # 3 obs en Abril; candidato a microestado extra AP
+    - R4C
+    - S1
+    - 1P
+    - 1 1/2P
+    - 2P
+    - R6
+
+# --------------------------------------------------------------------------
+# Clima (prompt seccion 13). Primer alcance: LA PRADERA, estacion 746
+# --------------------------------------------------------------------------
+climate:
+  station_by_farm:
+    LA PRADERA: 746
+  gdd_bases: [5.0, 5.2]
+  causal_windows_days: [1, 3, 7, 14, 21, 28, 42, 56]
+  fuente: EXTERIOR_ESTACION
+  microclima_invernadero_disponible: false
+  # Conversion radiacion onda corta -> PAR/PPFD (declarar incertidumbre)
+  par_fraction_of_shortwave: 0.45   # fraccion PAR tipica (hipotesis a validar)
+  umol_par_per_joule: 2.02          # umol PAR por J PAR (aprox. solar)
+
+# --------------------------------------------------------------------------
+# Podas (prompt seccion 12)
+# --------------------------------------------------------------------------
+pruning:
+  lag_days_min: 28
+  lag_days_max: 98
+  priority_lags_days: [42, 49, 56, 63, 70, 77, 84]
+  kernel_window_weeks: [8, 12]
+
+# --------------------------------------------------------------------------
+# Semi Markov (prompt seccion 16)
+# --------------------------------------------------------------------------
+semimarkov:
+  age_bins: [0, 1, 2, 3]      # 3 = cola 3+
+  age_max_latente: 6
+  tau: 1.0                    # suavizado hacia M3 (eventos no perdida)
+  tau_loss: 10.0
+  prior_other: 0.05
+  m3_loss_floor: 0.01
+  m3_category_floor: 0.01
+
+# --------------------------------------------------------------------------
+# Random Forest (prompt seccion 17)
+# --------------------------------------------------------------------------
+random_forest:
+  random_state: 42
+  max_depth_grid: [3, 5, 7, 10]
+  min_samples_leaf_grid: [2, 5, 10]
+  min_samples_split_grid: [5, 10, 20]
+  max_features: [sqrt, 0.5]
+  n_estimators: 500
+
+bayes:
+  seed: 42
+
+evaluation:
+  min_train_windows: 4        # minimo de semanas origen en TRAIN antes de predecir
+  bootstrap_reps: 1000
