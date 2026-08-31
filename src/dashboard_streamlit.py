@@ -27,7 +27,8 @@ def load_data():
     daily = pd.concat(daily, ignore_index=True) if daily else pd.DataFrame()
     weekly = (daily.groupby(["modelo", "finca", "semana_proyeccion"], as_index=False)
               .agg(fecha_origen=("fecha_origen", "min"), real=("real", lambda s: s.sum(min_count=1)),
-                   proyectado=("proyectado", "sum"), dias=("fecha_objetivo", "nunique"),
+                   proyectado=("proyectado", lambda s: s[daily.loc[s.index, "real"].notna()].sum()),
+                   proyectado_total=("proyectado", "sum"), dias=("fecha_objetivo", "nunique"),
                    filas_pronosticadas=("real", "size"), filas_reales=("real", "count")))
     weekly["estado_ventana"] = pd.Series(pd.NA, index=weekly.index, dtype="string")
     weekly.loc[weekly.filas_reales.eq(0), "estado_ventana"] = "PENDIENTE_REAL"
@@ -96,7 +97,7 @@ with left:
     week = weekly.copy()
     if model != "Todos": week = week[week.modelo.eq(model)]
     if farm != "Todas": week = week[week.finca.eq(farm)]
-    st.dataframe(week[["modelo", "finca", "fecha_origen", "semana_proyeccion", "real", "proyectado", "acierto_pct", "estado_ventana", "estado"]]
+    st.dataframe(week[["modelo", "finca", "semana_proyeccion", "fecha_origen", "real", "proyectado", "proyectado_total", "acierto_pct", "estado_ventana", "estado"]]
                  .sort_values("fecha_origen"), use_container_width=True, hide_index=True)
 with right:
     st.subheader("Ranking primario")
