@@ -65,6 +65,49 @@ def fit_rf_experiment(name, cols, x, y, train, valid, frame, params, model_n_job
     return row, pred
 
 
+def add_selection_scores(result):
+    """Rankea todas las metricas y crea un score compuesto orientado a semana."""
+    lower_metrics = ["wape", "mae", "rmse"]
+    scopes = ("daily", "weekly")
+    for scope in scopes:
+        for metric_name in lower_metrics:
+            column = f"{scope}_{metric_name}"
+            result[f"rank_{column}"] = result[column].rank(method="min", pct=True)
+        bias = f"{scope}_bias_pct"
+        result[f"rank_{bias}"] = result[bias].abs().rank(method="min", pct=True)
+        r2 = f"{scope}_r2"
+        result[f"rank_{r2}"] = 1 - result[r2].rank(method="min", pct=True)
+    weights = {"wape": 0.30, "mae": 0.15, "rmse": 0.15, "bias_pct": 0.15, "r2": 0.25}
+    weekly_score = sum(weights[m] * result[f"rank_weekly_{m}"] for m in weights)
+    daily_score = sum(weights[m] * result[f"rank_daily_{m}"] for m in weights)
+    result["selection_score"] = 0.70 * weekly_score + 0.30 * daily_score
+    return result
+
+
+def write_selected_prediction(label, result, predictions, frame, valid, evaluation):
+    """Guarda trazabilidad, hiperparametros y metricas del modelo seleccionado."""
+    selected = result.iloc[0]
+    key = selected.model
+    trace = frame.loc[valid, ["finca", "bloque", "fecha_origen", "fecha_objetivo",
+                              "semana_proyeccion", "horizonte_dia", "target"]].copy()
+    trace = trace.rename(columns={"target": "real"}).assign(pred=predictions[key])
+    metadata = {"selected_by": label, "model": selected.model, "family": selected.family,
+                "features": selected.features, "n_estimators": selected.get("n_estimators", np.nan),
+                "max_depth": selected.get("max_depth", np.nan),
+                "min_samples_leaf": selected.get("min_samples_leaf", np.nan),
+                "min_samples_split": selected.get("min_samples_split", np.nan),
+                "max_features": selected.get("max_features", np.nan),
+                "criterion": selected.get("criterion", np.nan)}
+    for metric_name in ("daily_wape", "daily_r2", "daily_mae", "daily_rmse", "daily_bias_pct",
+                        "weekly_wape", "weekly_r2", "weekly_mae", "weekly_rmse", "weekly_bias_pct",
+                        "selection_score"):
+        metadata[metric_name] = selected.get(metric_name, np.nan)
+    for column, value in reversed(list(metadata.items())):
+        trace.insert(0, column, value)
+    trace.to_csv(evaluation / f"predictions_best_{label}.csv", index=False)
+    return selected
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     cfg = load_config(root / "config" / "pipeline.yaml")
@@ -131,37 +174,30 @@ def main():
         rows.append({"model": key, "family": "TREE_CHALLENGER", "features": "FENO", **score(y[valid], pred, frame.loc[valid])})
         predictions[key] = pred
 
-    result = pd.DataFrame(rows).sort_values(["daily_r2", "daily_wape"], ascending=[False, True])
+    result = add_selection_scores(pd.DataFrame(rows))
+    result = result.sort_values("selection_score")
     result.to_csv(evaluation / "metrics_hyperparametros.csv", index=False)
-    for label, subset in {"r2": result.sort_values("daily_r2", ascending=False).head(1),
-                          "wape": result.sort_values("daily_wape").head(1)}.items():
-        selected = subset.iloc[0]
-        key = selected.model
-        pred = predictions[key]
-        trace = frame.loc[valid, ["finca", "bloque", "fecha_origen", "fecha_objetivo",
-                                  "semana_proyeccion", "horizonte_dia", "target"]].copy()
-        trace = trace.rename(columns={"target": "real"}).assign(pred=pred)
-        metadata = {
-            "selected_by": label,
-            "model": selected.model,
-            "family": selected.family,
-            "features": selected.features,
-            "n_estimators": selected.get("n_estimators", np.nan),
-            "max_depth": selected.get("max_depth", np.nan),
-            "min_samples_leaf": selected.get("min_samples_leaf", np.nan),
-            "min_samples_split": selected.get("min_samples_split", np.nan),
-            "max_features": selected.get("max_features", np.nan),
-            "criterion": selected.get("criterion", np.nan),
-            "daily_wape": selected.daily_wape,
-            "daily_r2": selected.daily_r2,
-            "daily_mae": selected.daily_mae,
-            "daily_rmse": selected.daily_rmse,
-            "weekly_wape": selected.weekly_wape,
-            "weekly_r2": selected.weekly_r2,
-        }
-        for column, value in metadata.items():
-            trace.insert(0, column, value)
-        trace.to_csv(evaluation / f"predictions_best_{label}.csv", index=False)
+    selection_targets = {
+        "daily_wape": "daily_wape", "daily_r2": "daily_r2", "daily_mae": "daily_mae",
+        "daily_rmse": "daily_rmse", "daily_bias_pct": "daily_bias_pct",
+        "weekly_wape": "weekly_wape", "weekly_r2": "weekly_r2", "weekly_mae": "weekly_mae",
+        "weekly_rmse": "weekly_rmse", "weekly_bias_pct": "weekly_bias_pct", "composite": "composite",
+    }
+    for label in selection_targets:
+        metric = selection_targets[label]
+        if metric == "composite":
+            result_for_selection = result
+        else:
+            result_for_selection = result.copy()
+            column = metric
+            if metric.endswith("r2"):
+                result_for_selection["_selection"] = -result_for_selection[column]
+            elif metric.endswith("bias_pct"):
+                result_for_selection["_selection"] = result_for_selection[column].abs()
+            else:
+                result_for_selection["_selection"] = result_for_selection[column]
+            result_for_selection = result_for_selection.sort_values("_selection")
+        write_selected_prediction(label, result_for_selection, predictions, frame, valid, evaluation)
     print(result.head(20).to_string(index=False))
 
 

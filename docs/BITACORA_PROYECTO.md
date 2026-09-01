@@ -25,7 +25,9 @@ validacion causal comun de 714 observaciones y WAPE de 27,92 por ciento en el
 artefacto actual de ranking.
 
 La busqueda adicional de hiperparametros evaluo 576 combinaciones de RF y dos
-challengers. Su mejor configuracion puntual fue:
+challengers. La seleccion se amplio a WAPE, MAE, RMSE, sesgo absoluto y R2,
+en escalas diaria y semanal. El mejor RF por R2 semanal y el score compuesto
+fue:
 
 ```text
 RF_FENO_CLIMA_n200_d10_l2_s10_f0.5_poisson
@@ -35,9 +37,13 @@ WAPE semanal: 15,01 por ciento
 R2 semanal: 0,8428
 ```
 
-Este resultado es exploratorio de validacion fija y aun no reemplaza el
-champion formal de Fase 8, porque la comparacion final no lo incorporo al
-ranking con bootstrap y no existe un tercer periodo temporal independiente.
+Para la decision estrictamente semanal, el menor WAPE semanal fue de
+`ExtraTrees_FENO`, 14,83 por ciento, mientras que el RF anterior obtuvo 15,01
+por ciento y el mejor R2 semanal, 0,8428. El score compuesto da mas peso a las
+metricas semanales y selecciona el RF anterior. Estos resultados son
+exploratorios de validacion fija y aun no reemplazan el champion formal de
+Fase 8, porque la comparacion final no los incorporo al ranking con bootstrap
+y no existe un tercer periodo temporal independiente.
 
 ## 3. Bitacora por fase
 
@@ -236,9 +242,12 @@ La busqueda se corrigio para usar las rejillas de configuracion, paralelizar
 combinaciones con Joblib y evitar sobreasignacion. En el equipo disponible se
 usaron automaticamente 3 procesos y 1 hilo por modelo, dejando 1 CPU libre.
 
-Se evaluaron 576 combinaciones RF y dos challengers. El mejor fue
-`RF_FENO_CLIMA_n200_d10_l2_s10_f0.5_poisson`, con WAPE diario 24,24 por ciento
-y R2 0,6592.
+Se evaluaron 576 combinaciones RF y dos challengers. Se generaron ganadores
+separados por cada metrica diaria y semanal, ademas de un `selection_score`
+compuesto con 70 por ciento de peso semanal y 30 por ciento diario. El mejor
+RF por score compuesto y R2 semanal fue
+`RF_FENO_CLIMA_n200_d10_l2_s10_f0.5_poisson`, con WAPE diario 24,24 por ciento,
+R2 diario 0,6592, WAPE semanal 15,01 por ciento y R2 semanal 0,8428.
 
 Problemas encontrados y corregidos:
 
@@ -249,7 +258,8 @@ Problemas encontrados y corregidos:
 - Se corrigio un fallo al cambiar el almacenamiento de predicciones a vectores
   durante la paralelizacion.
 - La interfaz Streamlit no mostraba el ganador de hiperparametros; ahora lo
-  incluye en validacion fija con ficha de parametros y metricas.
+  incluye en validacion fija con ficha de parametros, metricas y ranking
+  semanal.
 
 ## 4. Artefactos clave
 
@@ -257,8 +267,8 @@ Problemas encontrados y corregidos:
 - Dataset RF: `outputs/datasets/dataset_supervisado_diario.parquet`.
 - Ranking formal: `outputs/evaluation/ranking_final.csv`.
 - Busqueda: `outputs/evaluation/metrics_hyperparametros.csv`.
-- Predicciones RF ajustado: `outputs/evaluation/predictions_best_r2.csv` y
-  `predictions_best_wape.csv`.
+- Predicciones seleccionadas: `outputs/evaluation/predictions_best_*.csv`, con
+  salidas separadas para cada metrica diaria, semanal y el score compuesto.
 - Importancias: `outputs/models/importance_feno.csv` y archivos hermanos.
 - Interfaz: `src/dashboard_streamlit.py`.
 - Configuracion: `config/pipeline.yaml`.
@@ -266,9 +276,10 @@ Problemas encontrados y corregidos:
 ## 5. Estado y siguientes pasos
 
 Estado actual: pipeline reproducible de investigacion, con baseline, modelos
-challenger, comparacion causal y dashboard. El mejor resultado puntual de
-hiperparametros debe incorporarse a una nueva comparacion formal antes de
-llamarlo champion operacional.
+challenger, comparacion causal y dashboard. La seleccion semanal favorece el
+WAPE semanal para uso operativo, pero el mejor RF por score compuesto debe
+incorporarse a una nueva comparacion formal antes de llamarlo champion
+operacional.
 
 Siguientes pasos recomendados:
 
