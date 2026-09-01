@@ -48,6 +48,12 @@ def load_data(evaluation_mode):
     return metrics, daily, weekly
 
 
+@st.cache_data
+def load_hyperparameter_results():
+    path = ROOT / "outputs/evaluation/metrics_hyperparametros.csv"
+    return pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+
 st.set_page_config(page_title="Markov Freedom", page_icon=None, layout="wide")
 st.markdown("""<style>
 .block-container {padding-top: 1.5rem;}
@@ -57,13 +63,16 @@ st.title("Markov Freedom | Rendimiento de modelos")
 evaluation_mode = st.sidebar.radio("Evaluación", ["Rolling-origin", "Validación fija"], index=0,
                                    help="No mezclar métricas: la validación fija compara 714 registros; rolling usa todos los orígenes causales posibles.")
 metrics, daily, weekly = load_data(evaluation_mode)
+hyperparameter_results = load_hyperparameter_results()
 
 if daily.empty:
     st.error("No hay predicciones trazables. Ejecute las fases 2-7 primero.")
     st.stop()
 
 models = sorted(daily.modelo.unique())
-default_model = "RF_H1_H7_FENO" if "RF_H1_H7_FENO" in models else models[0]
+preferred_model = ("RF_BEST_HYPERPARAMETROS" if evaluation_mode == "Validación fija"
+                   else "RF_H1_H7_FENO")
+default_model = preferred_model if preferred_model in models else models[0]
 model = st.sidebar.selectbox("Modelo", models + ["Todos"], index=models.index(default_model))
 farms = sorted(daily.finca.unique())
 farm = st.sidebar.selectbox("Finca", ["Todas"] + farms)
@@ -135,6 +144,28 @@ with right:
     ranking = metrics[metrics.comparacion_primaria].sort_values("wape").drop_duplicates("experiment_id")
     st.dataframe(ranking[["experiment_id", "wape", "mae", "rmse", "r2", "bias_pct", "n"]],
                  use_container_width=True, hide_index=True)
+
+if not hyperparameter_results.empty:
+    best_hyper = hyperparameter_results.sort_values("daily_wape").iloc[0]
+    st.subheader("Mejor Random Forest de hiperparametros")
+    st.caption("Resultado de la busqueda en validacion fija; no sustituye el ranking formal de Fase 8.")
+    info_cols = st.columns(6)
+    info_cols[0].metric("Modelo", str(best_hyper["model"]))
+    info_cols[1].metric("Variables", str(best_hyper["features"]))
+    info_cols[2].metric("WAPE diario", f"{best_hyper['daily_wape']:.2%}")
+    info_cols[3].metric("R2 diario", f"{best_hyper['daily_r2']:.3f}")
+    info_cols[4].metric("WAPE semanal", f"{best_hyper['weekly_wape']:.2%}")
+    info_cols[5].metric("R2 semanal", f"{best_hyper['weekly_r2']:.3f}")
+    parameters = pd.DataFrame([{
+        "modelo": best_hyper["model"],
+        "n_estimators": best_hyper["n_estimators"],
+        "max_depth": best_hyper["max_depth"],
+        "min_samples_leaf": best_hyper["min_samples_leaf"],
+        "min_samples_split": best_hyper["min_samples_split"],
+        "max_features": best_hyper["max_features"],
+        "criterion": best_hyper["criterion"],
+    }])
+    st.dataframe(parameters, use_container_width=True, hide_index=True)
 
 st.subheader("Detalle diario")
 st.download_button("Descargar detalle filtrado CSV", filtered.to_csv(index=False), "detalle_modelos.csv", "text/csv")

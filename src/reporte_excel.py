@@ -50,6 +50,7 @@ PREDICTION_FILES_FIXED = {
     **PREDICTION_FILES,
     "E00_M3_BASE": "outputs/predictions/E00_M3_BASE.csv",
     "RF_H1_H7_FENO": "outputs/evaluation/predictions_rf_h1_h7_feno.csv",
+    "RF_BEST_HYPERPARAMETROS": "outputs/evaluation/predictions_best_wape.csv",
 }
 
 PREDICTION_FILES_ROLLING = {

@@ -168,6 +168,12 @@ random_forest:
   min_samples_split_grid: [5, 10, 20]
   max_features: [sqrt, 0.5]
   n_estimators: 500
+  n_estimators_grid: [200]
+  criterion_grid: [squared_error, poisson]
+  parallel:
+    n_jobs: auto
+    reserve_cpus: 1
+    model_n_jobs: 1
 
 supervised:
   nb_alpha: 1.0
