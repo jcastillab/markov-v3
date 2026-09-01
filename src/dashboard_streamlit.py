@@ -6,6 +6,7 @@ import json
 import pandas as pd
 import numpy as np
 import streamlit as st
+import altair as alt
 
 from evaluation.metrics import metrics as calculate_metrics
 from reporte_excel import (PREDICTION_FILES_FIXED, PREDICTION_FILES_ROLLING,
@@ -31,6 +32,10 @@ def add_weekly_status(weekly):
         weekly.filas_reales.gt(0) & weekly["real"].ne(0))
     weekly["estado"] = weekly["acierto_pct"].map(weekly_status)
     return weekly
+
+
+def week_label(value):
+    return str(int(value)) if pd.notna(value) else "N.A."
 
 
 def aggregate_weekly(daily, by_block=False):
@@ -64,6 +69,7 @@ def load_data(evaluation_mode):
         frame["fecha_objetivo"] = pd.to_datetime(frame["fecha_objetivo"])
         if "semana_proyeccion" not in frame:
             frame["semana_proyeccion"] = frame["fecha_objetivo"].dt.isocalendar().year * 100 + frame["fecha_objetivo"].dt.isocalendar().week
+        frame["semana_label"] = frame["semana_proyeccion"].map(week_label)
         frame["acierto_pct"] = (1 - (frame["real"] - frame["proyectado_modelo"]) / frame["real"].where(frame["real"] != 0)).astype(float)
         frame["error_abs"] = (frame["proyectado_modelo"] - frame["real"]).abs()
         daily.append(frame)
@@ -134,10 +140,26 @@ c5, c6, c7 = st.columns(3)
 c5.metric("Cercanas", near); c6.metric("No acertadas", miss); c7.metric("Pendientes / parciales", f"{pending} / {len(weeks_partial)}")
 
 st.subheader("Proyectado contra real")
-chart = (filtered.groupby("fecha_objetivo", as_index=True)[["real", "proyectado_modelo"]].sum(min_count=1)
-          .sort_index())
-chart = chart.rename(columns={"proyectado_modelo": "proyectado"})
-st.line_chart(chart, height=320)
+chart_with_week = (filtered.groupby(["fecha_objetivo", "semana_label"], as_index=False)
+                   [["real", "proyectado_modelo"]].sum(min_count=1).sort_values("fecha_objetivo"))
+chart_for_display = chart_with_week.melt(
+    id_vars=["fecha_objetivo", "semana_label"], var_name="serie", value_name="valor")
+daily_chart = alt.Chart(chart_for_display).mark_line().encode(
+    x=alt.X("fecha_objetivo:T", title="Día"),
+    y=alt.Y("valor:Q", title="Cantidad"),
+    color=alt.Color("serie:N", title=None),
+    tooltip=[
+        alt.Tooltip("fecha_objetivo:T", title="Día", format="%a %d %b %Y"),
+        alt.Tooltip("semana_label:N", title="Semana"),
+        alt.Tooltip("serie:N", title="Serie"),
+        alt.Tooltip("valor:Q", title="Valor", format=",.0f"),
+    ],
+).properties(height=320)
+st.altair_chart(daily_chart, use_container_width=True)
+st.caption("El eje muestra el día; al pasar el cursor se muestran también el día y la semana en formato YYYYWW.")
+chart = (chart_with_week.groupby("fecha_objetivo", as_index=True)
+         [["real", "proyectado_modelo"]].sum(min_count=1)
+         .rename(columns={"proyectado_modelo": "proyectado"}))
 residual = (chart["proyectado"] - chart["real"]).rename("residuo").dropna()
 st.subheader("Residuo diario: picos y valles")
 st.bar_chart(residual, height=180)
