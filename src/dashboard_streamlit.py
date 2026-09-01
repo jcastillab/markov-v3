@@ -1,6 +1,7 @@
 """Dashboard interactivo local para explorar el tablero de modelos."""
 
 from pathlib import Path
+import json
 
 import pandas as pd
 import numpy as np
@@ -199,25 +200,24 @@ with right:
                                      "selection_score"]], use_container_width=True, hide_index=True)
 
 if not hyperparameter_results.empty:
-    best_hyper = hyperparameter_results.sort_values("weekly_wape").iloc[0]
-    st.subheader("Mejor modelo de la busqueda de hiperparametros")
-    st.caption("Seleccionado por WAPE semanal en validacion fija; no sustituye el ranking formal de Fase 8.")
+    default_hyper = hyperparameter_results.sort_values("weekly_wape").iloc[0]["model"]
+    hyper_models = hyperparameter_results["model"].tolist()
+    selected_hyper_model = st.selectbox("Modelo de hiperparametros", hyper_models,
+                                        index=hyper_models.index(default_hyper))
+    selected_hyper = hyperparameter_results[
+        hyperparameter_results.model.eq(selected_hyper_model)].iloc[0]
+    st.subheader("Detalle del modelo seleccionado de hiperparametros")
+    st.caption(f"Seleccionado por: {selected_hyper_model}; validacion fija. No sustituye el ranking formal de Fase 8.")
     info_cols = st.columns(6)
-    info_cols[0].metric("Modelo", str(best_hyper["model"]))
-    info_cols[1].metric("Variables", str(best_hyper["features"]))
-    info_cols[2].metric("WAPE diario", f"{best_hyper['daily_wape']:.2%}")
-    info_cols[3].metric("R2 diario", f"{best_hyper['daily_r2']:.3f}")
-    info_cols[4].metric("WAPE semanal", f"{best_hyper['weekly_wape']:.2%}")
-    info_cols[5].metric("R2 semanal", f"{best_hyper['weekly_r2']:.3f}")
-    parameters = pd.DataFrame([{
-        "modelo": best_hyper["model"],
-        "n_estimators": best_hyper["n_estimators"],
-        "max_depth": best_hyper["max_depth"],
-        "min_samples_leaf": best_hyper["min_samples_leaf"],
-        "min_samples_split": best_hyper["min_samples_split"],
-        "max_features": best_hyper["max_features"],
-        "criterion": best_hyper["criterion"],
-    }])
+    info_cols[0].metric("Modelo", str(selected_hyper["model"]))
+    info_cols[1].metric("Variables", str(selected_hyper["features"]))
+    info_cols[2].metric("WAPE diario", f"{selected_hyper['daily_wape']:.2%}")
+    info_cols[3].metric("R2 diario", f"{selected_hyper['daily_r2']:.3f}")
+    info_cols[4].metric("WAPE semanal", f"{selected_hyper['weekly_wape']:.2%}")
+    info_cols[5].metric("R2 semanal", f"{selected_hyper['weekly_r2']:.3f}")
+    parameters = json.loads(selected_hyper["hyperparameters"])
+    parameters = pd.DataFrame([{"parametro": key, "valor": value}
+                               for key, value in parameters.items()])
     st.dataframe(parameters, use_container_width=True, hide_index=True)
 
 st.subheader("Detalle diario")

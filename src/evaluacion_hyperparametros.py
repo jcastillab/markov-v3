@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 import os
+import json
 from pathlib import Path
 
 import numpy as np
@@ -61,7 +62,11 @@ def fit_rf_experiment(name, cols, x, y, train, valid, frame, params, model_n_job
            "min_samples_leaf": params["min_samples_leaf"],
            "min_samples_split": params["min_samples_split"],
            "max_features": str(params["max_features"]),
-           "criterion": params["criterion"], **score(y[valid], pred, frame.loc[valid])}
+           "criterion": params["criterion"],
+           "hyperparameters": json.dumps({k: params[k] for k in (
+               "n_estimators", "max_depth", "min_samples_leaf", "min_samples_split",
+               "max_features", "criterion", "random_state")}, sort_keys=True),
+           **score(y[valid], pred, frame.loc[valid])}
     return row, pred
 
 
@@ -97,7 +102,8 @@ def write_selected_prediction(label, result, predictions, frame, valid, evaluati
                 "min_samples_leaf": selected.get("min_samples_leaf", np.nan),
                 "min_samples_split": selected.get("min_samples_split", np.nan),
                 "max_features": selected.get("max_features", np.nan),
-                "criterion": selected.get("criterion", np.nan)}
+                "criterion": selected.get("criterion", np.nan),
+                "hyperparameters": selected.get("hyperparameters", "")}
     for metric_name in ("daily_wape", "daily_r2", "daily_mae", "daily_rmse", "daily_bias_pct",
                         "weekly_wape", "weekly_r2", "weekly_mae", "weekly_rmse", "weekly_bias_pct",
                         "selection_score"):
@@ -171,7 +177,10 @@ def main():
     for key, model in challengers:
         model.fit(x[train], y[train])
         pred = model.predict(x[valid])
-        rows.append({"model": key, "family": "TREE_CHALLENGER", "features": "FENO", **score(y[valid], pred, frame.loc[valid])})
+        hyperparameters = model.get_params(deep=False)
+        rows.append({"model": key, "family": "TREE_CHALLENGER", "features": "FENO",
+                     "hyperparameters": json.dumps(hyperparameters, sort_keys=True, default=str),
+                     **score(y[valid], pred, frame.loc[valid])})
         predictions[key] = pred
 
     result = add_selection_scores(pd.DataFrame(rows))
