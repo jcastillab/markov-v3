@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def add_weekly_status(weekly):
     weekly = weekly.copy()
+    weekly["semana_label"] = weekly["semana_proyeccion"].map(
+        lambda value: str(int(value)) if pd.notna(value) else "N.A.")
     weekly["estado_ventana"] = pd.Series(pd.NA, index=weekly.index, dtype="string")
     weekly.loc[weekly.filas_reales.eq(0), "estado_ventana"] = "PENDIENTE_REAL"
     weekly.loc[weekly.filas_reales.eq(weekly.filas_pronosticadas), "estado_ventana"] = "VALIDA"
@@ -79,9 +81,9 @@ st.markdown("""<style>
 .block-container {padding-top: 1.5rem;}
 [data-testid="stMetricValue"] {font-size: 1.8rem;}
 </style>""", unsafe_allow_html=True)
-st.title("Markov Freedom | Rendimiento de modelos")
-evaluation_mode = st.sidebar.radio("Evaluación", ["Rolling-origin", "Validación fija"], index=0,
-                                   help="No mezclar métricas: la validación fija compara 714 registros; rolling usa todos los orígenes causales posibles.")
+st.title("Markov Freedom | Validación de modelos")
+evaluation_mode = "Validación fija"
+st.sidebar.info("Vista limitada al conjunto de validación fija. No se muestran datos de entrenamiento.")
 metrics, daily, weekly, weekly_block = load_data(evaluation_mode)
 hyperparameter_results = load_hyperparameter_results()
 
@@ -126,7 +128,7 @@ c1.metric("WAPE", f"{wape:.2%}" if pd.notna(wape) else "N.A.")
 c2.metric("Acierto relativo medio", f"{accuracy:.2%}" if pd.notna(accuracy) else "N.A.")
 c3.metric("MAE", f"{filtered.error_abs.mean():,.0f}" if len(filtered) else "N.A.")
 c4.metric("R²", f"{r2:.3f}" if pd.notna(r2) else "N.A.", help="Coeficiente calculado sobre las filas filtradas. Puede ser negativo.")
-c5.metric("Semanas acertadas", f"{hits} / {len(weeks_observed)}")
+c5.metric("Finca-semanas acertadas", f"{hits} / {len(weeks_observed)}")
 c5, c6, c7 = st.columns(3)
 c5.metric("Cercanas", near); c6.metric("No acertadas", miss); c7.metric("Pendientes / parciales", f"{pending} / {len(weeks_partial)}")
 
@@ -164,9 +166,12 @@ if len(complete_weeks):
     w1.metric("WAPE semanal", f"{weekly_wape:.2%}")
     w2.metric("R² semanal", f"{weekly_scores['r2']:.3f}")
     w3.metric("MAE semanal", f"{weekly_scores['mae']:,.0f}")
-    w4.metric("Semanas completas", len(complete_weeks))
-weekly_chart = (weekly_view.groupby("semana_proyeccion", as_index=True)[["real", "proyectado_modelo"]]
-                .sum(min_count=1).rename(columns={"proyectado_modelo": "proyectado"}).sort_index())
+    w4.metric("Semanas calendario completas", complete_weeks.semana_proyeccion.nunique())
+    st.caption(f"Combinaciones finca-semana completas: {len(complete_weeks)}")
+weekly_chart = (weekly_view.groupby(["semana_proyeccion", "semana_label"], as_index=True)
+                [["real", "proyectado_modelo"]].sum(min_count=1).sort_index())
+weekly_chart.index = weekly_chart.index.get_level_values("semana_label")
+weekly_chart = weekly_chart.rename(columns={"proyectado_modelo": "proyectado"})
 st.line_chart(weekly_chart, height=320)
 
 left, right = st.columns(2)
@@ -178,7 +183,7 @@ with left:
     if block != "Todos" and "bloque" in week: week = week[week.bloque.eq(block)]
     st.caption("Se muestran todas las semanas; las semanas parciales se identifican por separado.")
     table_cols = ["modelo", "finca"] + (["bloque"] if "bloque" in week else []) + [
-        "semana_proyeccion", "fecha_origen", "real", "proyectado", "proyectado_total",
+        "semana_label", "fecha_origen", "real", "proyectado", "proyectado_total",
         "acierto_pct", "estado_ventana", "estado"]
     st.dataframe(week[table_cols].sort_values("fecha_origen"), use_container_width=True, hide_index=True)
 with right:
