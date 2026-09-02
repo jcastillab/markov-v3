@@ -11,6 +11,7 @@ import altair as alt
 from evaluation.metrics import metrics as calculate_metrics
 from reporte_excel import (PREDICTION_FILES_FIXED, PREDICTION_FILES_ROLLING,
                            _metrics, _traces, weekly_status)
+from models.supervised import feature_groups
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +59,21 @@ def aggregate_weekly(daily, by_block=False):
     return add_weekly_status(weekly)
 
 
+def complete_validation_daily(daily, weekly_view):
+    """Conserva solo filas diarias de combinaciones finca-semana completas."""
+    key_cols = ["modelo", "finca", "semana_proyeccion"]
+    if "bloque" in weekly_view:
+        key_cols.insert(2, "bloque")
+    valid_keys = weekly_view.loc[
+        weekly_view.estado_ventana.eq("VALIDA"), key_cols
+    ].drop_duplicates()
+    if valid_keys.empty:
+        return daily.iloc[0:0].copy()
+    return (daily.merge(valid_keys.assign(_valid=True), on=key_cols, how="inner")
+            .drop(columns="_valid")
+            .dropna(subset=["real"]))
+
+
 @st.cache_data
 def load_data(evaluation_mode):
     metrics = _metrics(ROOT)
@@ -83,12 +99,43 @@ def load_hyperparameter_results():
     return pd.read_csv(path) if path.exists() else pd.DataFrame()
 
 
+@st.cache_data
+def load_model_inputs():
+    path = ROOT / "outputs/datasets/dataset_supervisado_diario.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    frame = pd.read_parquet(path)
+    cols = list(dict.fromkeys(c for c in feature_groups(frame)["FENO"]
+                             if c in frame.select_dtypes(include=[np.number]).columns
+                             and c != "target"))
+    base_cols = ["finca", "bloque", "fecha_origen", "fecha_objetivo",
+                 "semana_proyeccion", "horizonte_dia", "target"]
+    return frame[base_cols + [c for c in cols if c not in base_cols]]
+
+
+@st.cache_data
+def load_diagnostics():
+    def read(name):
+        path = ROOT / "outputs/evaluation" / name
+        return pd.read_csv(path) if path.exists() else pd.DataFrame()
+    return {"overfit": read("diagnostico_sobreajuste.csv"),
+            "correlations": read("diagnostico_correlaciones_altas.csv"),
+            "vif": read("diagnostico_vif.csv"),
+            "features": read("diagnostico_features.csv"),
+            "importance": read("diagnostico_importancia_horizonte.csv"),
+            "leakage": read("diagnostico_leakage.csv"),
+            "ablation": read("metrics_rf_ablation_m3.csv")}
+
+
 st.set_page_config(page_title="Markov Freedom", page_icon=None, layout="wide")
 st.markdown("""<style>
 .block-container {padding-top: 1.5rem;}
 [data-testid="stMetricValue"] {font-size: 1.8rem;}
+[data-testid="stMetric"] {background: #f4f7f8; border: 1px solid #dce5e8; padding: .75rem; border-radius: .65rem;}
+[data-testid="stExpander"] {border-color: #dce5e8;}
 </style>""", unsafe_allow_html=True)
-st.title("Markov Freedom | Validación de modelos")
+st.title("Markov Freedom")
+st.caption("Centro de validación causal, diagnóstico y trazabilidad de pronósticos")
 evaluation_mode = "Validación fija"
 st.sidebar.info("Vista limitada al conjunto de validación fija. No se muestran datos de entrenamiento.")
 metrics, daily, weekly, weekly_block = load_data(evaluation_mode)
@@ -115,21 +162,23 @@ if farm != "Todas": filtered = filtered[filtered.finca.eq(farm)]
 if block != "Todos": filtered = filtered[filtered.bloque.eq(block)]
 if horizon != "Todos": filtered = filtered[filtered.horizonte_dia.eq(horizon)]
 
+# La validación compara únicamente ventanas completas, igual que las métricas
+# semanales. Las pendientes y parciales se conservan en la tabla de detalle.
+selected_weekly = aggregate_weekly(filtered, by_block=block != "Todos")
+filtered = complete_validation_daily(filtered, selected_weekly)
+
 denom = filtered.real.abs().sum()
 wape = filtered.error_abs.sum() / denom if denom else float("nan")
 accuracy = (1 - (filtered.real.sum() - filtered.proyectado_modelo.sum()) / filtered.real.sum()) if filtered.real.sum() else float("nan")
 r2 = calculate_metrics(filtered.real, filtered.proyectado_modelo)["r2"]
-c_week = weekly_block.copy() if block != "Todos" else weekly.copy()
-if model != "Todos": c_week = c_week[c_week.modelo.eq(model)]
-if farm != "Todas": c_week = c_week[c_week.finca.eq(farm)]
-weeks_observed = c_week[c_week.filas_reales.gt(0)]
-weeks_valid = c_week[c_week.estado_ventana.eq("VALIDA")]
-weeks_partial = c_week[c_week.estado_ventana.eq("PARCIAL")]
+weeks_observed = selected_weekly[selected_weekly.estado_ventana.eq("VALIDA")]
+weeks_valid = weeks_observed
+weeks_partial = selected_weekly[selected_weekly.estado_ventana.eq("PARCIAL")]
 hits = int(weeks_observed.acierto_pct.between(.93, 1.07, inclusive="both").sum())
 near = int((weeks_observed.acierto_pct.between(.90, .93, inclusive="left") | weeks_observed.acierto_pct.between(1.07, 1.10, inclusive="right")).sum())
 miss = int(len(weeks_observed) - hits - near)
-pending = int(c_week.estado_ventana.eq("PENDIENTE_REAL").sum())
-partial = int(c_week.estado_ventana.eq("PARCIAL").sum())
+pending = int(selected_weekly.estado_ventana.eq("PENDIENTE_REAL").sum())
+partial = int(selected_weekly.estado_ventana.eq("PARCIAL").sum())
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("WAPE", f"{wape:.2%}" if pd.notna(wape) else "N.A.")
 c2.metric("Acierto relativo medio", f"{accuracy:.2%}" if pd.notna(accuracy) else "N.A.")
@@ -138,6 +187,7 @@ c4.metric("R²", f"{r2:.3f}" if pd.notna(r2) else "N.A.", help="Coeficiente calc
 c5.metric("Finca-semanas acertadas", f"{hits} / {len(weeks_observed)}")
 c5, c6, c7 = st.columns(3)
 c5.metric("Cercanas", near); c6.metric("No acertadas", miss); c7.metric("Pendientes / parciales", f"{pending} / {len(weeks_partial)}")
+st.caption("WAPE, MAE, R² y los gráficos de validación usan únicamente ventanas finca-semana completas. Las pendientes y parciales no se incluyen.")
 
 st.subheader("Proyectado contra real")
 chart_with_week = (filtered.groupby(["fecha_objetivo", "semana_label"], as_index=False)
@@ -173,14 +223,8 @@ st.caption("H1-H7 es la posición del día dentro de la ventana semanal. Se graf
 with st.expander("Mayores errores diarios"):
     st.dataframe(worst, use_container_width=True, hide_index=True)
 
-st.subheader("Pronostico semanal: todas las semanas")
-weekly_view = weekly_block.copy() if block != "Todos" else weekly.copy()
-if model != "Todos":
-    weekly_view = weekly_view[weekly_view.modelo.eq(model)]
-if farm != "Todas":
-    weekly_view = weekly_view[weekly_view.finca.eq(farm)]
-if block != "Todos" and "bloque" in weekly_view:
-    weekly_view = weekly_view[weekly_view.bloque.eq(block)]
+st.subheader("Pronostico semanal: validacion")
+weekly_view = selected_weekly
 complete_weeks = weekly_view[weekly_view.estado_ventana.eq("VALIDA")]
 if len(complete_weeks):
     weekly_scores = calculate_metrics(complete_weeks.real, complete_weeks.proyectado_modelo)
@@ -191,7 +235,7 @@ if len(complete_weeks):
     w3.metric("MAE semanal", f"{weekly_scores['mae']:,.0f}")
     w4.metric("Semanas calendario completas", complete_weeks.semana_proyeccion.nunique())
     st.caption(f"Combinaciones finca-semana completas: {len(complete_weeks)}")
-weekly_chart = (weekly_view.groupby(["semana_proyeccion", "semana_label"], as_index=True)
+weekly_chart = (complete_weeks.groupby(["semana_proyeccion", "semana_label"], as_index=True)
                 [["real", "proyectado_modelo"]].sum(min_count=1).sort_index())
 weekly_chart.index = weekly_chart.index.get_level_values("semana_label")
 weekly_chart = weekly_chart.rename(columns={"proyectado_modelo": "proyectado"})
@@ -200,10 +244,7 @@ st.line_chart(weekly_chart, height=320)
 left, right = st.columns(2)
 with left:
     st.subheader("Acierto semanal por finca")
-    week = weekly_block.copy() if block != "Todos" else weekly.copy()
-    if model != "Todos": week = week[week.modelo.eq(model)]
-    if farm != "Todas": week = week[week.finca.eq(farm)]
-    if block != "Todos" and "bloque" in week: week = week[week.bloque.eq(block)]
+    week = selected_weekly
     st.caption("Se muestran todas las semanas; las semanas parciales se identifican por separado.")
     table_cols = ["modelo", "finca"] + (["bloque"] if "bloque" in week else []) + [
         "semana_label", "fecha_origen", "real", "proyectado", "proyectado_total",
@@ -241,6 +282,154 @@ if not hyperparameter_results.empty:
     parameters = pd.DataFrame([{"parametro": key, "valor": value}
                                for key, value in parameters.items()])
     st.dataframe(parameters, use_container_width=True, hide_index=True)
+
+st.subheader("Variables de entrada y diagnóstico")
+inputs = load_model_inputs()
+diagnostics = load_diagnostics()
+if inputs.empty:
+    st.info("No existe el dataframe supervisado. Ejecute fase6_supervisado.py.")
+else:
+    input_tab, comparison_tab, health_tab, collinearity_tab, quality_tab = st.tabs([
+        "Variables de entrada", "RF con / sin M3", "Sobreajuste", "Colinealidad", "Calidad y explicación"])
+    with input_tab:
+        input_weeks = sorted(inputs.semana_proyeccion.dropna().unique())
+        selected_input_week = st.selectbox("Semana de origen / proyección", ["Todas"] + input_weeks,
+                                           key="input_week")
+        input_view = inputs.copy()
+        if selected_input_week != "Todas":
+            input_view = input_view[input_view.semana_proyeccion.eq(selected_input_week)]
+        if farm != "Todas":
+            input_view = input_view[input_view.finca.eq(farm)]
+        if block != "Todos":
+            input_view = input_view[input_view.bloque.eq(block)]
+        if horizon != "Todos":
+            input_view = input_view[input_view.horizonte_dia.eq(horizon)]
+        st.caption("target es el corte real observado y no es una variable de entrada.")
+        st.download_button("Descargar variables de entrada CSV", input_view.to_csv(index=False),
+                           "variables_entrada_rf.csv", "text/csv", key="download_inputs")
+        st.dataframe(input_view, use_container_width=True, hide_index=True)
+
+    with comparison_tab:
+        ablation = diagnostics["ablation"]
+        if ablation.empty:
+            st.info("Ejecute ablation_rf_m3.py para generar la comparación.")
+        else:
+            base = metrics[(metrics.experiment_id == "RF_H1_H7_FENO") & metrics.n.eq(714)]
+            no_m3 = ablation[(ablation.experiment_id == "RF_H1_H7_FENO_SIN_M3") &
+                             ablation.horizonte.astype(str).eq("TODOS")]
+            comparison = pd.DataFrame([
+                {"modelo": "RF H1-H7 con M3", "wape": base.wape.iloc[0] if len(base) else np.nan},
+                {"modelo": "RF H1-H7 sin M3", "wape": no_m3.wape.iloc[0] if len(no_m3) else np.nan},
+                {"modelo": "M3 baseline", "wape": metrics.loc[metrics.experiment_id.eq("E00_M3_BASE"), "wape"].iloc[0]
+                 if metrics.experiment_id.eq("E00_M3_BASE").any() else np.nan},
+            ])
+            chart = alt.Chart(comparison).mark_bar().encode(
+                x=alt.X("wape:Q", title="WAPE", axis=alt.Axis(format=".0%")),
+                y=alt.Y("modelo:N", sort="-x", title=None),
+                color=alt.Color("modelo:N", legend=None),
+                tooltip=["modelo", alt.Tooltip("wape:Q", format=".2%")],
+            ).properties(height=220)
+            st.altair_chart(chart, use_container_width=True)
+            no_m3_rows = ablation[ablation.horizonte.astype(str).isin([str(i) for i in range(1, 8)])]
+            with st.expander("Comparación por horizonte"):
+                st.dataframe(no_m3_rows, use_container_width=True, hide_index=True)
+            st.caption("Esta comparación usa el mismo split temporal y los mismos hiperparámetros. La variante sin M3 fue reentrenada, no simulada eliminando columnas.")
+
+    if diagnostics["overfit"].empty:
+        st.info("Ejecute diagnostico_modelos.py para cargar sobreajuste, colinealidad y leakage.")
+    else:
+        with health_tab:
+            overfit = diagnostics["overfit"]
+            validation = overfit[overfit.scope.eq("VALIDATION")]
+            high_risk = int(validation.riesgo_sobreajuste.eq("ALTO").sum())
+            medium_risk = int(validation.riesgo_sobreajuste.eq("MEDIO").sum())
+            h1, h2, h3 = st.columns(3)
+            h1.metric("Horizontes alto riesgo", high_risk)
+            h2.metric("Horizontes riesgo medio", medium_risk)
+            h3.metric("Mayor gap WAPE", f"{validation.gap_wape.max():.1%}")
+            plot = overfit.copy()
+            plot["horizonte_label"] = "H" + plot.horizonte.astype(str)
+            chart = alt.Chart(plot).mark_bar().encode(
+                x=alt.X("horizonte_label:N", title="Horizonte"),
+                y=alt.Y("wape:Q", title="WAPE", axis=alt.Axis(format=".0%")),
+                color=alt.Color("scope:N", title="Muestra"),
+                tooltip=["horizonte_label", "scope", alt.Tooltip("wape:Q", format=".2%"),
+                         alt.Tooltip("r2:Q", format=".3f"), "riesgo_sobreajuste"],
+            ).properties(height=300)
+            st.altair_chart(chart, use_container_width=True)
+            gap_chart = alt.Chart(validation).mark_bar().encode(
+                x=alt.X("horizonte:N", title="Horizonte"),
+                y=alt.Y("gap_wape:Q", title="Gap WAPE", axis=alt.Axis(format=".0%")),
+                color=alt.Color("riesgo_sobreajuste:N", scale=alt.Scale(
+                    domain=["BAJO", "MEDIO", "ALTO"], range=["#2e8b57", "#d99b23", "#c94c4c"]),
+                    title="Riesgo"),
+                tooltip=["horizonte", alt.Tooltip("gap_wape:Q", format=".2%"), "riesgo_sobreajuste"],
+            ).properties(height=220)
+            st.altair_chart(gap_chart, use_container_width=True)
+            st.caption("El gap se interpreta junto con el tamaño de muestra y el comportamiento temporal; no constituye una prueba aislada de sobreajuste.")
+            with st.expander("Detalle numérico train-validation"):
+                st.dataframe(overfit, use_container_width=True, hide_index=True)
+        with collinearity_tab:
+            st.caption("La colinealidad no invalida un Random Forest, pero sí puede repartir la importancia entre variables redundantes.")
+            vif = diagnostics["vif"].head(15).sort_values("vif")
+            vif_chart = alt.Chart(vif).mark_bar().encode(
+                x=alt.X("vif:Q", title="VIF", scale=alt.Scale(type="log")),
+                # Una escala logarítmica no admite el cero que usaría por defecto
+                # una barra; VIF=1 es la base natural del diagnóstico.
+                x2=alt.X2(datum=1),
+                y=alt.Y("variable:N", sort="-x", title=None),
+                color=alt.Color("riesgo:N", scale=alt.Scale(
+                    domain=["BAJO", "MEDIO", "ALTO"], range=["#2e8b57", "#d99b23", "#c94c4c"]), title="Riesgo"),
+                tooltip=["variable", "vif", "riesgo"],
+            ).properties(height=420)
+            st.altair_chart(vif_chart, use_container_width=True)
+            top_variables = vif.variable.tolist()[:12]
+            corr_values = inputs[top_variables].corr().reindex(
+                index=top_variables, columns=top_variables)
+            # La diagonal representa cada variable consigo misma y debe ser
+            # exactamente 1, incluso con columnas casi constantes o redondeos.
+            np.fill_diagonal(corr_values.values, 1.0)
+            corr = (corr_values.rename_axis("variable_1").reset_index()
+                    .melt(id_vars="variable_1", var_name="variable_2",
+                          value_name="correlacion"))
+            heatmap = alt.Chart(corr).mark_rect().encode(
+                x=alt.X("variable_2:N", title=None, sort=top_variables),
+                y=alt.Y("variable_1:N", title=None, sort=top_variables),
+                color=alt.Color("correlacion:Q", scale=alt.Scale(domain=[-1, 1], scheme="redblue"),
+                                 title="r"),
+                tooltip=["variable_1", "variable_2", alt.Tooltip("correlacion:Q", format=".3f")],
+            ).properties(height=420)
+            st.altair_chart(heatmap, use_container_width=True)
+            with st.expander("Detalle de pares correlacionados"):
+                st.dataframe(diagnostics["correlations"].head(50), use_container_width=True, hide_index=True)
+        with quality_tab:
+            features = diagnostics["features"].copy()
+            top_missing = features.sort_values("faltantes_pct", ascending=False).head(15)
+            missing_chart = alt.Chart(top_missing).mark_bar().encode(
+                x=alt.X("faltantes_pct:Q", title="Faltantes", axis=alt.Axis(format=".0%")),
+                y=alt.Y("variable:N", sort="-x", title=None),
+                color=alt.Color("faltantes_pct:Q", scale=alt.Scale(scheme="yelloworangered"), title="%"),
+                tooltip=["variable", alt.Tooltip("faltantes_pct:Q", format=".2%"), "unicos"],
+            ).properties(height=360)
+            st.altair_chart(missing_chart, use_container_width=True)
+            if not diagnostics["importance"].empty:
+                selected_importance = diagnostics["importance"]
+                if horizon != "Todos":
+                    selected_importance = selected_importance[selected_importance.horizonte.eq(horizon)]
+                selected_importance = selected_importance.head(20).sort_values("importance")
+                importance_chart = alt.Chart(selected_importance).mark_bar().encode(
+                    x=alt.X("importance:Q", title="Importancia estructural"),
+                    y=alt.Y("variable:N", sort="-x", title=None),
+                    color=alt.Color("horizonte:N", title="Horizonte"),
+                    tooltip=["variable", "horizonte", "importance"],
+                ).properties(height=420)
+                st.altair_chart(importance_chart, use_container_width=True)
+            leakage = diagnostics["leakage"]
+            leakage_ok = leakage.resultado.eq("OK").all()
+            st.success("Auditoría básica de leakage: OK") if leakage_ok else st.error("Auditoría básica de leakage: revisar")
+            with st.expander("Detalle de calidad y leakage"):
+                st.dataframe(features, use_container_width=True, hide_index=True)
+                st.dataframe(leakage, use_container_width=True, hide_index=True)
 
 st.subheader("Detalle diario")
 st.download_button("Descargar detalle filtrado CSV", filtered.to_csv(index=False), "detalle_modelos.csv", "text/csv")

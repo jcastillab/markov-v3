@@ -41,7 +41,8 @@ def build_supervised_dataset(windows, fact, intervals, cfg, pruning=None, climat
     for _, w in windows.iterrows():
         if not include_incomplete and not w.ventana_evaluable:
             continue
-        key = (w.finca, w.bloque, w.fecha_origen)
+        # M3 es una feature auxiliar y debe corresponder al dia objetivo.
+        key = (w.finca, w.bloque, w.fecha_origen, w.fecha_objetivo)
         if key not in cache:
             period = _period_for_date(pd.Timestamp(w.fecha_origen), cfg["m3"]["periods"])
             matrix = fit_m3(intervals, w.finca, period, pd.Timestamp(w.fecha_origen))

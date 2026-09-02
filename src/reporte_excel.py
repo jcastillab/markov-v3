@@ -53,6 +53,7 @@ PREDICTION_FILES_FIXED = {
     "BEST_WEEKLY_WAPE": "outputs/evaluation/predictions_best_weekly_wape.csv",
     "RF_BEST_WEEKLY_R2": "outputs/evaluation/predictions_best_weekly_r2.csv",
     "RF_BEST_COMPOSITE": "outputs/evaluation/predictions_best_composite.csv",
+    "RF_H1_H7_FENO_SIN_M3": "outputs/evaluation/predictions_rf_h1_h7_feno_sin_m3.csv",
 }
 
 PREDICTION_FILES_ROLLING = {

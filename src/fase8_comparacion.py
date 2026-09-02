@@ -25,7 +25,8 @@ def main():
     root = Path(__file__).resolve().parents[1]; cfg = __import__("canonical").load_config(root / "config/pipeline.yaml")
     evaluation = root / cfg["paths"]["outputs"] / "evaluation"
     files = ["metrics_fase2_m3.csv", "metrics_fase4_podas.csv", "metrics_fase5_clima.csv",
-             "metrics_fase6_supervisado.csv", "metrics_fase7_bayes.csv"]
+             "metrics_fase6_supervisado.csv", "metrics_fase7_bayes.csv",
+             "metrics_rf_ablation_m3.csv"]
     frames = [pd.read_csv(evaluation / f) for f in files]
     all_metrics = pd.concat(frames, ignore_index=True, sort=False)
     causal = all_metrics[all_metrics.causal.astype(bool)].copy()
@@ -35,7 +36,8 @@ def main():
     ranked = causal[causal.scope_comparable].sort_values("wape").drop_duplicates("experiment_id")
     pred_map = {"E00_M3_BASE": "E00_M3_BASE.csv",
                 "RF_DIARIO_POOLED_FENO": "predictions_feno.csv",
-                "RF_H1_H7_FENO": "predictions_rf_h1_h7_feno.csv",
+                 "RF_H1_H7_FENO": "predictions_rf_h1_h7_feno.csv",
+                 "RF_H1_H7_FENO_SIN_M3": "predictions_rf_h1_h7_feno_sin_m3.csv",
                  "RF_RESIDUAL_M3_FENO": "predictions_rf_residual_m3_feno.csv",
                  "NB_JERARQUICO": "predictions_nb_jerarquico.csv",
                  "NB_JERARQUICO_COVARIABLES": "predictions_nb_jerarquico_covariables.csv"}
