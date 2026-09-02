@@ -386,9 +386,12 @@ else:
             top_variables = vif.variable.tolist()[:12]
             corr_values = inputs[top_variables].corr().reindex(
                 index=top_variables, columns=top_variables)
+            corr_array = np.array(corr_values, dtype=float, copy=True)
+            np.fill_diagonal(corr_array, 1.0)
+            corr_values = pd.DataFrame(
+                corr_array, index=top_variables, columns=top_variables)
             # La diagonal representa cada variable consigo misma y debe ser
             # exactamente 1, incluso con columnas casi constantes o redondeos.
-            np.fill_diagonal(corr_values.values, 1.0)
             corr = (corr_values.rename_axis("variable_1").reset_index()
                     .melt(id_vars="variable_1", var_name="variable_2",
                           value_name="correlacion"))
