@@ -19,10 +19,10 @@ from pptx.util import Inches, Pt
 
 try:
     from models.bayes import HierarchicalNB
-    from models.supervised import build_supervised_dataset
+    from models.supervised import build_supervised_dataset, feature_groups
 except ModuleNotFoundError:
     from src.models.bayes import HierarchicalNB
-    from src.models.supervised import build_supervised_dataset
+    from src.models.supervised import build_supervised_dataset, feature_groups
 
 matplotlib.use("Agg")
 
@@ -221,6 +221,70 @@ def plot_model_comparison(ranking):
     return path
 
 
+def load_feature_inventory():
+    """Resume las familias de variables disponibles en el dataset supervisado."""
+    path = ROOT / "outputs" / "datasets" / "dataset_supervisado_diario.parquet"
+    frame = pd.read_parquet(path)
+    numeric = set(frame.select_dtypes(include=[np.number]).columns)
+    groups = {name: list(dict.fromkeys(col for col in cols if col in numeric and col != "target"))
+              for name, cols in feature_groups(frame).items()}
+    feno = set(groups["FENO"])
+    return frame, groups, pd.DataFrame([
+        {"Familia": "Fenología, M3, escala e historia", "Variables": len(feno), "Detalle": "conteos t0, proporciones, M3, camas y cortes rezagados"},
+        {"Familia": "Clima causal", "Variables": len(set(groups["FENO_CLIMA"]) - feno), "Detalle": "VPD, GDD, DLI, temperatura, lluvia y ET0 en ventanas 1-56d"},
+        {"Familia": "Podas y alineamiento", "Variables": len(set(groups["FENO_PODA"]) - feno), "Detalle": "lags, acumulados, kernels y días desde operación"},
+        {"Familia": "FENO_CLIMA total", "Variables": len(groups["FENO_CLIMA"]), "Detalle": "familia usada por el RF operativo exploratorio"},
+    ])
+
+
+def plot_feature_composition(inventory):
+    fig, ax = plt.subplots(figsize=(10, 4.8))
+    base = inventory.iloc[0]
+    climate = inventory.iloc[1]
+    pruning = inventory.iloc[2]
+    values = [base.Variables, climate.Variables, pruning.Variables]
+    labels = ["Base FENO\n(45)", "Clima adicional\n(74)", "Poda adicional\n(77)"]
+    bars = ax.bar(labels, values, color=["#2c3e50", "#2980b9", "#d99b23"])
+    ax.set_ylabel("Número de variables numéricas")
+    ax.set_title("Cobertura de señales por familia de features")
+    ax.grid(axis="y", linestyle="--", alpha=.35)
+    for bar, value in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width() / 2, value + 2, str(value), ha="center", fontweight="bold")
+    ax.text(.5, -0.23, "FENO_CLIMA = 119 variables | FENO_PODA_CLIMA = 196 variables", transform=ax.transAxes,
+            ha="center", fontsize=10, color="#45505a")
+    fig.tight_layout()
+    path = OUT / "inventario_features.png"
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return path
+
+
+def plot_correlation_heatmap(frame):
+    candidates = ["RC_t0", "SS_t0", "AP_t0", "p_RC", "p_SS", "p_AP", "log1p_RC",
+                  "log1p_SS", "log1p_AP", "M3_pred_bloque", "corte_sum_7d", "corte_mean_7d"]
+    cols = [col for col in candidates if col in frame.columns]
+    corr_raw = frame[cols].corr().reindex(index=cols, columns=cols)
+    corr_array = np.array(corr_raw, dtype=float, copy=True)
+    np.fill_diagonal(corr_array, 1.0)
+    corr = pd.DataFrame(corr_array, index=cols, columns=cols)
+    fig, ax = plt.subplots(figsize=(10, 7.5))
+    image = ax.imshow(corr, vmin=-1, vmax=1, cmap="RdBu")
+    ax.set_xticks(range(len(cols)), cols, rotation=45, ha="right", fontsize=8)
+    ax.set_yticks(range(len(cols)), cols, fontsize=8)
+    for row in range(len(cols)):
+        for col in range(len(cols)):
+            value = corr.iloc[row, col]
+            ax.text(col, row, f"{value:.2f}", ha="center", va="center", fontsize=6,
+                    color="white" if abs(value) > .55 else "black")
+    fig.colorbar(image, ax=ax, label="Correlación Pearson")
+    ax.set_title("Correlaciones entre señales estructurales del RF")
+    fig.tight_layout()
+    path = OUT / "correlaciones_features.png"
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return path
+
+
 def color_for_hit(error):
     """Colores de la escala operativa: <=7%, <=10%, >10%."""
     if error <= 0.07:
@@ -262,8 +326,9 @@ def add_bullet_slide(prs, title, bullets):
     return slide
 
 
-def add_explanation_slide(prs, title, subtitle, equation, points, accent):
-    """Slide visual para explicar mecanismo, valor y resultado."""
+def add_explanation_slide(prs, title, subtitle, equation, left_title, left_points,
+                          right_title, right_points, accent):
+    """Slide visual con mecanismo y evidencia no redundante."""
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     title_box = slide.shapes.add_textbox(Inches(.55), Inches(.35), Inches(12.2), Inches(.55))
     title_box.text_frame.text = title
@@ -278,13 +343,14 @@ def add_explanation_slide(prs, title, subtitle, equation, points, accent):
     left.fill.solid(); left.fill.fore_color.rgb = RGBColor.from_string(accent); left.line.fill.background()
     tf = left.text_frame; tf.clear(); tf.margin_left = Inches(.28); tf.margin_right = Inches(.25)
     p = tf.paragraphs[0]; p.text = equation; p.font.size = Pt(22); p.font.bold = True; p.font.color.rgb = RGBColor(255, 255, 255)
-    for point in points:
+    p = tf.add_paragraph(); p.text = left_title; p.font.size = Pt(16); p.font.bold = True; p.font.color.rgb = RGBColor(255, 255, 255); p.space_before = Pt(16)
+    for point in left_points:
         p = tf.add_paragraph(); p.text = point; p.level = 0; p.font.size = Pt(14); p.font.color.rgb = RGBColor(255, 255, 255); p.space_before = Pt(12)
     right = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(6.05), Inches(1.55), Inches(6.65), Inches(4.95))
     right.fill.solid(); right.fill.fore_color.rgb = RGBColor(0xF3, 0xF6, 0xF8); right.line.color.rgb = RGBColor(0xD8, 0xE1, 0xE5)
     rtf = right.text_frame; rtf.clear(); rtf.margin_left = Inches(.3)
-    p = rtf.paragraphs[0]; p.text = "Como aporta al negocio"; p.font.size = Pt(18); p.font.bold = True; p.font.color.rgb = RGBColor(0x2C, 0x3E, 0x50)
-    for point in points:
+    p = rtf.paragraphs[0]; p.text = right_title; p.font.size = Pt(18); p.font.bold = True; p.font.color.rgb = RGBColor(0x2C, 0x3E, 0x50)
+    for point in right_points:
         p = rtf.add_paragraph(); p.text = point; p.font.size = Pt(15); p.font.color.rgb = RGBColor(0x45, 0x4D, 0x5A); p.space_before = Pt(15)
     return slide
 
@@ -416,16 +482,20 @@ def main():
             "Matrices de transición por finca y vigencia (Abril / Julio).",
             "Simulación diaria del vector de estado a partir del conteo t0.",
             "Extrapolación muestra → bloque con factor de camas.",
-            "Resultado baseline: WAPE 55,52% sobre 714 días de validación causal.",
+            "Resultado baseline corregido: WAPE 45,90% sobre 714 días de validación causal.",
         ],
     )
     add_explanation_slide(prs, "M3: una fotografía fenológica convertida en trayectoria",
                           "Modelo de referencia mecanicista y baseline obligatorio",
                           "x(t+1) = Q x(t) + ingreso_RC",
-                          ["x(t) = [RC, SS, AP] observados en t0.",
-                           "Q conserva la masa entre estados y r' x(t) estima PC.",
-                           "Interpretable: permite explicar por qué se espera el corte.",
-                           "WAPE causal: 55,52% sobre 714 observaciones."], "C0392B")
+                          "Qué usa",
+                          ["3 conteos fenológicos: RC, SS y AP en t0.",
+                           "Matriz por finca y vigencia Abril/Julio.",
+                           "Exposiciones por grupos de duración: no requiere pares diarios."],
+                          "Qué permite auditar",
+                          ["Flujo RC → SS → AP → PC y pérdidas por estado.",
+                           "AP→PC La Pradera: 47,78% Abril; 32,12% Julio.",
+                           "WAPE causal corregido: 45,90%; sesgo: -24,64%."], "C0392B")
 
     # Riesgo / P32
     add_bullet_slide(
@@ -442,10 +512,14 @@ def main():
     add_explanation_slide(prs, "Riesgo: no solo importa el estado, también la edad",
                           "La duración modifica la probabilidad de avanzar o cortar",
                           "P(siguiente | estado, edad)",
-                          ["P32 aporta observaciones longitudinales por tallo.",
-                           "El hazard permite diferenciar un tallo joven de uno próximo a corte.",
-                           "M3-P32 REG alcanzó 34,53% WAPE, pero en escenario retrospectivo.",
-                           "Aprendizaje: una mejora retrospectiva no equivale a evidencia operacional."], "8E44AD")
+                          "Datos y parámetros",
+                          ["1.297 observaciones P32; 514 intervalos válidos.",
+                           "Variables: estado macro, edad, evento y exposición.",
+                           "Hazards RC/SS/AP con suavizado hacia M3."],
+                          "Lectura correcta del resultado",
+                          ["M3-P32 regularizado: WAPE 34,53%.",
+                           "No se mezcla con el ranking: P32 fue capturado después de las ventanas.",
+                           "Valor actual: aprender duración; no operar el resultado retrospectivo."], "8E44AD")
 
     # Podas y clima
     add_bullet_slide(
@@ -459,6 +533,10 @@ def main():
             "Cobertura limitada a una finca y sin microclima de invernadero.",
         ],
     )
+    feature_frame, feature_groups_map, inventory = load_feature_inventory()
+    add_table_slide(prs, "Inventario de señales del modelo supervisado", inventory)
+    add_image_slide(prs, "Familias de variables: base, clima y poda", plot_feature_composition(inventory))
+    add_image_slide(prs, "Colinealidad en señales estructurales", plot_correlation_heatmap(feature_frame))
 
     # RF
     add_bullet_slide(
@@ -474,11 +552,15 @@ def main():
     )
     add_explanation_slide(prs, "Random Forest: aprende la relación no lineal con el corte",
                            "Combina señales fenológicas, clima, historial y escala de camas",
-                          "corte = f(fenología, M3, historial, exposición)",
-                           ["La búsqueda compara familias de variables y hiperparámetros.",
-                            "La configuración ganadora fue FENO_CLIMA con criterio Poisson.",
-                            "WAPE diario: 24,59%; WAPE semanal: 15,06%.",
-                            "El resultado es comparable porque usa la misma validación fija."], "27AE60")
+                           "corte = f(fenología, M3, historial, exposición)",
+                           "Variables usadas por FENO_CLIMA",
+                           ["119 variables: 45 base + 74 climáticas causales.",
+                            "Base: conteos t0, proporciones, log1p, M3, camas e historial de cortes.",
+                            "Clima: VPD, GDD, DLI, temperatura, lluvia y ET0 en ventanas 1-56 días."],
+                           "Control y resultado",
+                           ["Se detectó VIF alto en agregados de corte, proporciones y logs; RF tolera redundancia, pero reparte importancia.",
+                            "Mejor RF exploratorio: WAPE diario 24,59%; semanal 15,06%.",
+                            "Validación temporal fija y rolling; falta tercer periodo congelado."], "27AE60")
 
     # Bayesiano
     add_bullet_slide(
@@ -495,10 +577,14 @@ def main():
     add_explanation_slide(prs, "Bayes: regularización e incertidumbre explícita",
                           "Pooling entre finca, bloque y horizonte para evitar estimaciones frágiles",
                           "Y ~ NegBin(μ, α)",
-                          ["El NB jerárquico encoge grupos pequeños hacia la media global.",
-                           "Mejor resultado Bayesiano causal: WAPE 35,61%.",
-                           "Los intervalos no alcanzan cobertura nominal.",
-                           "Aporta una ruta de mejora, pero no debe usarse todavía como incertidumbre operativa."], "2980B9")
+                          "Estructura del modelo",
+                          ["Nivel global → finca → bloque → horizonte.",
+                           "Variables de agrupación: finca, bloque y día de horizonte.",
+                           "Posterior Dirichlet adicional para matrices M3."],
+                          "Resultado y limitación",
+                          ["NB jerárquico: WAPE 35,61%, mejor Bayesiano causal.",
+                           "Cobertura: 16,1% al 80% y 23,4% al 95%; está descalibrada.",
+                           "Aporta pooling para bloques escasos, no intervalos operativos todavía."], "2980B9")
 
     # Ranking final
     ranking = pd.read_csv(ROOT / "outputs" / "evaluation" / "ranking_final.csv")
@@ -557,7 +643,11 @@ def main():
     )
 
     pptx_path = OUT / "presentacion_ejecutiva_markov_v3.pptx"
-    prs.save(pptx_path)
+    try:
+        prs.save(pptx_path)
+    except PermissionError:
+        pptx_path = OUT / "presentacion_ejecutiva_markov_v3_actualizada.pptx"
+        prs.save(pptx_path)
     print(f"Presentacion guardada en: {pptx_path}")
 
 
