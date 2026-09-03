@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import json
 from pathlib import Path
 
 import numpy as np
@@ -32,7 +33,7 @@ def _m3_predictions(windows, intervals, cfg):
     return pd.DataFrame(rows)
 
 
-def _rf_predictions(frame, cfg):
+def _rf_predictions(frame, cfg, selected_params=None):
     groups = feature_groups(frame)
     cols = list(dict.fromkeys(c for c in groups["FENO"] if c in frame.select_dtypes(include=[np.number]).columns))
     x_all = frame[cols].replace([np.inf, -np.inf], np.nan).fillna(0)
@@ -40,6 +41,14 @@ def _rf_predictions(frame, cfg):
     min_origins = int(cfg["supervised"]["rolling_min_train_origins"])
     rf_cfg = cfg["random_forest"]
     predictions = []
+    params = selected_params or {
+        "n_estimators": cfg["random_forest"]["n_estimators"],
+        "max_depth": cfg["random_forest"]["max_depth_grid"][0],
+        "min_samples_leaf": cfg["random_forest"]["min_samples_leaf_grid"][0],
+        "min_samples_split": cfg["random_forest"]["min_samples_split_grid"][0],
+        "max_features": cfg["random_forest"]["max_features"][0],
+        "criterion": cfg["random_forest"]["criterion_grid"][0],
+    }
     for position, origin in enumerate(origins):
         if position < min_origins:
             continue
@@ -47,16 +56,14 @@ def _rf_predictions(frame, cfg):
         previous = (pd.to_datetime(frame.fecha_origen) < origin).to_numpy() & frame.target.notna().to_numpy()
         if previous.sum() == 0 or current.sum() == 0:
             continue
-        model = RandomForestRegressor(n_estimators=rf_cfg["n_estimators"],
-            max_depth=rf_cfg["max_depth_grid"][0], min_samples_leaf=rf_cfg["min_samples_leaf_grid"][0],
-            min_samples_split=rf_cfg["min_samples_split_grid"][0], max_features=rf_cfg["max_features"][0],
+        model = RandomForestRegressor(**params,
             random_state=rf_cfg["random_state"], n_jobs=-1)
         model.fit(x_all[previous], frame.loc[previous, "target"])
         pred = model.predict(x_all[current])
         current_frame = frame.loc[current, ["finca", "bloque", "fecha_origen", "fecha_objetivo",
                                             "semana_proyeccion", "horizonte_dia", "estado_ventana", "target"]].copy()
         current_frame = current_frame.rename(columns={"target": "real"})
-        current_frame["modelo"] = "RF_H1_H7_FENO_ROLLING"
+        current_frame["modelo"] = "RF_MEJOR_HIPERPARAMETROS_ROLLING"
         current_frame["proyectado"] = pred
         predictions.append(current_frame)
     return pd.concat(predictions, ignore_index=True)
@@ -96,8 +103,15 @@ def main():
     climate = pd.read_parquet(datasets / "clima_features.parquet")
     frame = build_supervised_dataset(windows, fact, intervals, cfg, pruning, climate, include_incomplete=True)
     m3 = _m3_predictions(windows, intervals, cfg)
-    rf = _rf_predictions(frame, cfg)
-    for model, predictions in (("E00_M3_BASE_ROLLING", m3), ("RF_H1_H7_FENO_ROLLING", rf)):
+    selected_params = None
+    selected_path = evaluation / "predictions_best_weekly_wape.csv"
+    if selected_path.exists():
+        selected = pd.read_csv(selected_path, nrows=1).iloc[0]
+        selected_params = json.loads(selected["hyperparameters"])
+        selected_params.pop("random_state", None)
+    rf = _rf_predictions(frame, cfg, selected_params)
+    for model, predictions in (("E00_M3_BASE_ROLLING", m3),
+                               ("RF_MEJOR_HIPERPARAMETROS_ROLLING", rf)):
         predictions.to_csv(evaluation / f"predictions_{model.lower()}.csv", index=False)
     weekly = pd.concat([_metrics_by_week(m3), _metrics_by_week(rf)], ignore_index=True)
     weekly.to_csv(evaluation / "metrics_rolling_origin_semanal.csv", index=False)

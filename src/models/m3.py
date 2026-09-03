@@ -25,7 +25,12 @@ def _norm_code(value: object) -> str:
 
 
 def load_traditional_intervals(raw: Path, cfg: dict) -> pd.DataFrame:
-    """Normaliza Abril/Junio/Julio a intervalos diarios consecutivos."""
+    """Construye exposiciones diarias de M3_EXPOSICIONES_GRUPO.
+
+    La fuente fenologica se observa por fechas de conteo, no necesariamente
+    todos los dias. Por eso una trayectoria completa aporta ``duracion - 1``
+    exposiciones STAY y una exposicion de salida (avance, corte o perdida).
+    """
     mapping = {_norm_code(k): v for k, v in
                cfg["fenologia"]["micro_to_macro"].items()}
     aliases = {_norm_code(k): _norm_code(v) for k, v in
@@ -47,32 +52,63 @@ def load_traditional_intervals(raw: Path, cfg: dict) -> pd.DataFrame:
             long["finca"] = long["FINCA"].map(_norm_code).map(farm_aliases).fillna(
                 long["FINCA"].map(_norm_code))
             for stem in stem_cols:
-                obs = long[["finca", "fecha", stem]].rename(columns={stem: "codigo_raw"})
-                obs["codigo_raw"] = obs["codigo_raw"].map(_norm_code)
-                obs["codigo_canonico"] = obs["codigo_raw"].map(
-                    lambda x: aliases.get(x, x))
-                obs["macroestado"] = obs["codigo_canonico"].map(mapping)
-                obs = obs.sort_values("fecha")
-                obs["fecha_siguiente"] = obs["fecha"].shift(-1)
-                obs["codigo_siguiente"] = obs["codigo_canonico"].shift(-1)
-                obs["macro_siguiente"] = obs["macroestado"].shift(-1)
-                obs["delta_dias"] = (obs["fecha_siguiente"] - obs["fecha"]).dt.days
-                for _, r in obs.iloc[:-1].iterrows():
-                    source = r["macroestado"]
-                    destination = r["macro_siguiente"]
-                    if pd.isna(source) or pd.isna(destination) or r["delta_dias"] != 1:
+                # Cada columna de tallo puede repetirse entre cohortes/fincas;
+                # nunca se debe concatenar la trayectoria de dos cohortes.
+                for cohort, cohort_rows in long.groupby(["FINCA", "finca"], dropna=False):
+                    obs = cohort_rows[["finca", "fecha", stem]].rename(columns={stem: "codigo_raw"})
+                    obs["codigo_raw"] = obs["codigo_raw"].map(_norm_code)
+                    obs["codigo_canonico"] = obs["codigo_raw"].map(lambda x: aliases.get(x, x))
+                    obs["macroestado"] = obs["codigo_canonico"].map(mapping)
+                    obs = obs.dropna(subset=["fecha"]).sort_values("fecha").reset_index(drop=True)
+                    if obs.empty:
                         continue
-                    event = EVENTS.get(source, {}).get(destination)
-                    if event is None:
+                    states = obs["macroestado"].tolist()
+                    rc_index = next((i for i, value in enumerate(states) if value == "RC"), None)
+                    terminal_index = next(
+                        (i for i in range((rc_index or 0) + 1, len(states))
+                         if states[i] in {"PC", "L"}), None)
+                    if rc_index is None or terminal_index is None:
                         continue
-                    rows.append({"finca": r["finca"], "periodo": period,
-                                 "fecha": r["fecha"], "estado_origen": source,
-                                 "estado_destino": destination, "evento": event,
-                                 "codigo_raw_origen": r["codigo_raw"],
-                                 "codigo_raw_destino": r["codigo_siguiente"],
-                                 "delta_dias": int(r["delta_dias"]),
-                                 "fuente": filename, "hoja": sheet,
-                                 "id_trayectoria": f"{sheet}|{r['finca']}|{stem}"})
+                    duration = int((obs.loc[terminal_index, "fecha"] -
+                                     obs.loc[rc_index, "fecha"]).days)
+                    if duration <= 0:
+                        continue
+                    trajectory = f"{sheet}|{cohort[0]}|{stem}"
+                    for state in STATES:
+                        start = next((i for i in range(rc_index, terminal_index + 1)
+                                      if states[i] == state), None)
+                        if start is None:
+                            continue
+                        destinations = set(STATES[STATES.index(state) + 1:]) | {"PC", "L"}
+                        exit_index = next((i for i in range(start + 1, terminal_index + 1)
+                                           if states[i] in destinations), None)
+                        if exit_index is None:
+                            continue
+                        state_duration = int((obs.loc[exit_index, "fecha"] -
+                                              obs.loc[start, "fecha"]).days)
+                        if state_duration <= 0:
+                            continue
+                        source = state
+                        destination = states[exit_index]
+                        event = EVENTS[source].get(destination)
+                        if event is None:
+                            continue
+                        source_raw = obs.loc[start, "codigo_raw"]
+                        destination_raw = obs.loc[exit_index, "codigo_raw"]
+                        for offset in range(state_duration):
+                            is_exit = offset == state_duration - 1
+                            rows.append({
+                                "finca": obs.loc[start, "finca"], "periodo": period,
+                                "fecha": obs.loc[start, "fecha"] + pd.Timedelta(days=offset),
+                                "estado_origen": source,
+                                "estado_destino": destination if is_exit else source,
+                                "evento": event if is_exit else "STAY",
+                                "codigo_raw_origen": source_raw,
+                                "codigo_raw_destino": destination_raw if is_exit else source_raw,
+                                "delta_dias": 1, "duracion_grupo": duration,
+                                "tallo": str(stem), "fuente": filename, "hoja": sheet,
+                                "id_trayectoria": trajectory,
+                            })
     return pd.DataFrame(rows)
 
 
@@ -97,50 +133,57 @@ class M3Matrix:
 
 def fit_m3(intervals: pd.DataFrame, finca: str, periodo: str,
            max_date: pd.Timestamp | None = None) -> M3Matrix:
-    """Ajusta una matriz causal; usa fallback global si falta soporte."""
-    data = intervals[(intervals["finca"] == finca) &
-                     (intervals["periodo"] == periodo)]
-    provenance = "FINCA_PERIODO"
+    """Ajusta M3 por grupos de duración, con fallback por estado."""
+    data = intervals[(intervals["finca"] == finca) & (intervals["periodo"] == periodo)].copy()
+    global_data = intervals[intervals["periodo"] == periodo].copy()
+    historical_data = intervals.copy()
     if max_date is not None:
         data = data[data["fecha"] <= max_date]
+        global_data = global_data[global_data["fecha"] <= max_date]
+        historical_data = historical_data[historical_data["fecha"] <= max_date]
+    if global_data.empty:
+        global_data = historical_data.copy()
     if data.empty:
-        data = intervals[(intervals["periodo"] == periodo) &
-                         (intervals["fecha"] <= max_date if max_date is not None else True)]
-        provenance = "PERIODO_GLOBAL_FALLBACK"
-    if data.empty:
-        data = intervals[intervals["fecha"] <= max_date] if max_date is not None else intervals
-        provenance = "GLOBAL_FALLBACK"
-    Q = np.zeros((3, 3), dtype=float)
-    r = np.zeros(3, dtype=float)
-    p = np.zeros(3, dtype=float)
+        data = global_data.copy()
+    groups = data["duracion_grupo"].dropna().unique().tolist() if "duracion_grupo" in data else []
+    if not groups:
+        groups = [None]
+    weights = []
+    for group in groups:
+        subset = data if group is None else data[data["duracion_grupo"].eq(group)]
+        weights.append(float(subset["id_trayectoria"].nunique()) if "id_trayectoria" in subset else float(len(subset)))
+    weights = np.asarray(weights, dtype=float)
+    weights = weights / weights.sum() if weights.sum() else np.ones(len(groups)) / len(groups)
+    Q = np.zeros((3, 3), dtype=float); r = np.zeros(3, dtype=float); p = np.zeros(3, dtype=float)
     audit = []
-    for j, source in enumerate(STATES):
-        subset = data[data["estado_origen"] == source]
-        counts = subset["evento"].value_counts().to_dict()
-        n = int(len(subset))
-        denom = max(n, 1)
-        for dest, event in EVENTS[source].items():
-            value = float(counts.get(event, 0)) / denom
-            if dest in STATES:
-                Q[STATES.index(dest), j] = value
-            elif dest == "PC":
-                r[j] = value
-            elif dest == "L":
-                p[j] = value
-            audit.append({"finca": finca, "periodo": periodo,
-                          "estado_origen": source, "estado_destino": dest,
-                          "n_exposiciones": n, "n_eventos": int(counts.get(event, 0)),
-                          "probabilidad": value, "procedencia": provenance,
-                          "fecha_max_dato_modelo": max_date})
-    # Empty rows are kept stochastic and auditable rather than inventing data.
-    for j in range(3):
-        if Q[:, j].sum() + r[j] + p[j] == 0:
-            Q[j, j] = 1.0
-            audit.append({"finca": finca, "periodo": periodo,
-                          "estado_origen": STATES[j], "estado_destino": STATES[j],
-                          "n_exposiciones": 0, "n_eventos": 0,
-                          "probabilidad": 1.0, "procedencia": "IDENTIDAD_SIN_SOPORTE",
-                          "fecha_max_dato_modelo": max_date})
+    for group, weight in zip(groups, weights):
+        subset_group = data if group is None else data[data["duracion_grupo"].eq(group)]
+        for j, source in enumerate(STATES):
+            subset = subset_group[subset_group["estado_origen"].eq(source)]
+            provenance = "GRUPO_DURACION"
+            if subset.empty:
+                subset = global_data[global_data["estado_origen"].eq(source)]
+                provenance = "GLOBAL_PERIODO_ESTADO_FALLBACK"
+            if subset.empty:
+                subset = historical_data[historical_data["estado_origen"].eq(source)]
+                provenance = "GLOBAL_HISTORICO_ESTADO_FALLBACK"
+            counts = subset["evento"].value_counts().to_dict()
+            n = int(len(subset))
+            if n == 0:
+                raise ValueError(f"Sin exposiciones para {periodo}/{source}, incluso en fallback global")
+            for dest, event in EVENTS[source].items():
+                value = float(counts.get(event, 0)) / n
+                if dest in STATES: Q[STATES.index(dest), j] += weight * value
+                elif dest == "PC": r[j] += weight * value
+                elif dest == "L": p[j] += weight * value
+                audit.append({"finca": finca, "periodo": periodo, "duracion_grupo": group,
+                              "estado_origen": source, "estado_destino": dest,
+                              "n_exposiciones": n, "n_eventos": int(counts.get(event, 0)),
+                              "probabilidad": value, "peso_grupo": weight,
+                              "procedencia": provenance, "fecha_max_dato_modelo": max_date})
+    sums = Q.sum(axis=0) + r + p
+    if not np.allclose(sums, np.ones(3), atol=1e-10):
+        raise ValueError(f"Las columnas de M3 no suman 1: {sums}")
     return M3Matrix(finca, periodo, Q, r, p, pd.DataFrame(audit))
 
 
