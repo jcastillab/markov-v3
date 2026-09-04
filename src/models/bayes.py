@@ -65,29 +65,81 @@ class DirichletM3:
 
 
 class HierarchicalNB:
-    """Pooling conjugado Gamma-Poisson por finca, bloque y horizonte."""
+    """Gamma-Poisson con pooling parcial finca -> bloque -> horizonte.
+
+    ``shrinkage`` representa pseudo-observaciones en cada nivel. El posterior
+    de un grupo se usa como prior del nivel siguiente, por lo que las medias y
+    los intervalos usan exactamente los mismos parametros conjugados.
+    """
 
     def __init__(self, shrinkage=10.0):
         self.shrinkage = shrinkage
 
     def fit(self, frame):
-        self.global_mean = float(frame.target.mean())
-        self.stats = (frame.groupby(["finca", "bloque", "horizonte_dia"])["target"]
-                      .agg(["sum", "count"]).reset_index())
+        if frame.empty:
+            raise ValueError("No se puede ajustar HierarchicalNB con un frame vacio")
+        target = pd.to_numeric(frame["target"], errors="coerce")
+        if target.isna().any() or (target < 0).any():
+            raise ValueError("target debe contener conteos finitos no negativos")
+        self.global_mean = float(target.mean())
+        self.global_shape = max(self.global_mean * self.shrinkage, 1e-9)
+        self.global_rate = max(float(self.shrinkage), 1e-9)
+        grouped = (frame.assign(target=target)
+                   .groupby(["finca", "bloque", "horizonte_dia"])["target"]
+                   .agg(["sum", "count"]).reset_index())
+        farm = frame.assign(target=target).groupby("finca")["target"].agg(["sum", "count"])
+        block = frame.assign(target=target).groupby(["finca", "bloque"])["target"].agg(["sum", "count"])
+        self.stats = grouped
+        self.farm_posterior = self._posteriors(farm, self.global_shape, self.global_rate)
+        self.block_posterior = {}
+        for key, row in block.iterrows():
+            parent = self.farm_posterior[(key[0] if isinstance(key, tuple) else key,)]
+            self.block_posterior[key if isinstance(key, tuple) else (key,)] = self._posterior_from_parent_mean(
+                parent, row["sum"], row["count"])
+        self.group_posterior = {}
+        for _, row in grouped.iterrows():
+            key = (row.finca, row.bloque, row.horizonte_dia)
+            parent = self.block_posterior[(row.finca, row.bloque)]
+            self.group_posterior[key] = self._posterior_from_parent_mean(
+                parent, row["sum"], row["count"])
         return self
 
+    @staticmethod
+    def _posterior(shape, rate, total, count):
+        return float(shape + total), float(rate + count)
+
+    def _posterior_from_parent_mean(self, parent, total, count):
+        parent_mean = parent[0] / parent[1]
+        return self._posterior(parent_mean * self.shrinkage, self.shrinkage, total, count)
+
+    @classmethod
+    def _posteriors(cls, grouped, shape, rate):
+        return {((key,) if not isinstance(key, tuple) else key): cls._posterior(
+            shape, rate, row["sum"], row["count"])
+                for key, row in grouped.iterrows()}
+
+    def _posterior_for_row(self, row):
+        group = self.group_posterior.get((row.finca, row.bloque, row.horizonte_dia))
+        if group is not None:
+            return group
+        block = self.block_posterior.get((row.finca, row.bloque))
+        if block is not None:
+            return block
+        return self.farm_posterior.get((row.finca,), (self.global_shape, self.global_rate))
+
     def predict(self, frame):
-        out = frame[["finca", "bloque", "horizonte_dia"]].merge(
-            self.stats, on=["finca", "bloque", "horizonte_dia"], how="left")
-        return ((out["sum"].fillna(0) + self.shrinkage * self.global_mean) /
-                (out["count"].fillna(0) + self.shrinkage)).to_numpy()
+        return np.asarray([
+            shape / rate for row in frame.itertuples(index=False)
+            for shape, rate in [self._posterior_for_row(row)]
+        ], dtype=float)
 
     def predictive_interval(self, frame, draws=100, seed=42):
-        mean = self.predict(frame)
         rng = np.random.default_rng(seed)
-        shape = 1.0 / max(self.shrinkage / max(self.global_mean, 1e-6), 1e-6)
-        rate_mean = np.maximum(mean, 0)
-        lambdas = rng.gamma(shape, rate_mean / shape, size=(draws, len(mean)))
+        posterior = [self._posterior_for_row(row) for row in frame.itertuples(index=False)]
+        lambdas = np.column_stack([
+            rng.gamma(shape, 1.0 / rate, size=draws)
+            for shape, rate in posterior
+        ]) if posterior else np.empty((draws, 0))
         samples = rng.poisson(lambdas)
         return np.quantile(samples, [.1, .9, .025, .975], axis=0)
 

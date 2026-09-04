@@ -24,12 +24,16 @@ def main():
     frame = pd.read_parquet(datasets / "dataset_supervisado_diario.parquet")
     frame["semana_del_año"] = pd.to_datetime(frame["fecha_origen"]).dt.isocalendar().week.astype(float)
     frame["periodo_ABRIL_JULIO"] = (pd.to_datetime(frame["fecha_origen"]).dt.month >= 7).astype(float)
-    origins = (windows.groupby(["finca", "bloque", "fecha_origen"], as_index=False)
-               .size().drop(columns="size").sort_values("fecha_origen"))
-    n = max(cfg["evaluation"]["min_train_windows"], int(len(origins) * .60))
-    valid_keys = set(map(tuple, origins.iloc[n:].itertuples(index=False, name=None)))
-    valid = frame[[tuple(x) in valid_keys for x in zip(frame.finca, frame.bloque, frame.fecha_origen)]]
-    train = frame[[tuple(x) not in valid_keys for x in zip(frame.finca, frame.bloque, frame.fecha_origen)]]
+    origin_dates = sorted(pd.to_datetime(windows["fecha_origen"]).unique())
+    n = max(cfg["evaluation"]["min_train_windows"], int(len(origin_dates) * .60))
+    if n >= len(origin_dates):
+        raise ValueError("No queda una fecha de validacion despues del minimo de entrenamiento")
+    validation_start = pd.Timestamp(origin_dates[n])
+    origin = pd.to_datetime(frame["fecha_origen"])
+    objective = pd.to_datetime(frame["fecha_objetivo"])
+    valid = frame[origin >= validation_start].copy()
+    # Un objetivo posterior al cutoff no es observable al entrenar el modelo.
+    train = frame[(origin < validation_start) & (objective < validation_start)].copy()
     # NB jerarquico: efectos finca-bloque-horizonte con pooling hacia la media global.
     nb = HierarchicalNB(cfg["bayes"]["hierarchical_shrinkage"]).fit(train)
     pred_nb = nb.predict(valid)
@@ -57,12 +61,13 @@ def main():
                                                    (valid.target.to_numpy() <= intervals_cov[3])),
                  "ancho_medio_intervalo": float(np.mean(intervals_cov[1] - intervals_cov[0])), **cov_metrics})
     # Posterior Dirichlet por origen, con matriz M3 causal como centro del prior.
-    pred, lows, highs, real = [], [], [], []
-    for _, row in valid.iterrows():
+    pred, lows, highs, lows95, highs95, real, summaries = [], [], [], [], [], [], []
+    for row_i, (_, row) in enumerate(valid.iterrows()):
         origin = pd.Timestamp(row.fecha_origen); period = _period_for_date(origin, cfg["m3"]["periods"])
         prior = fit_m3(intervals, row.finca, period, origin)
         data = intervals[(intervals.finca == row.finca) & (intervals.periodo == period) & (intervals.fecha <= origin)]
-        posterior = DirichletM3(data, prior, cfg["bayes"]["dirichlet_prior_strength"], cfg["bayes"]["seed"])
+        posterior = DirichletM3(data, prior, cfg["bayes"]["dirichlet_prior_strength"],
+                                cfg["bayes"]["seed"] + row_i)
         x0 = np.array([row.RC_t0, row.SS_t0, row.AP_t0]); lead = (pd.Timestamp(row.fecha_objetivo) - origin).days
         samples = []
         for _ in range(cfg["bayes"]["posterior_draws"]):
@@ -70,14 +75,23 @@ def main():
             from models.m3 import M3Matrix
             matrix = M3Matrix(row.finca, period, q, r, loss, prior.audit)
             samples.append(simulate(matrix, x0, lead, cfg["m3"]["baseline_ingress"]).iloc[-1].PC_dia_muestra * row.factor_extrapolacion)
-        pred.append(float(np.mean(samples))); lows.append(float(np.quantile(samples, .1))); highs.append(float(np.quantile(samples, .9))); real.append(row.target)
-    pred, lows, highs, real = map(np.asarray, (pred, lows, highs, real))
+        pred.append(float(np.mean(samples))); lows.append(float(np.quantile(samples, .1)))
+        highs.append(float(np.quantile(samples, .9)))
+        lows95.append(float(np.quantile(samples, .025)))
+        highs95.append(float(np.quantile(samples, .975))); real.append(row.target)
+        summary = posterior.posterior_summary(cfg["bayes"]["posterior_draws"])
+        summary["finca"], summary["periodo"], summary["fecha_origen"] = row.finca, period, origin
+        summaries.append(summary)
+    pred, lows, highs, lows95, highs95, real = map(
+        np.asarray, (pred, lows, highs, lows95, highs95, real))
     d_metrics = metrics(pd.Series(real), pd.Series(pred))
     rows.append({"experiment_id": "M3_DIRICHLET_MULTINOMIAL", "split": "VALIDATION", "causal": True,
                  "coverage_interval_80": np.mean((real >= lows) & (real <= highs)),
-                 "coverage_interval_95": np.nan, "ancho_medio_intervalo": float(np.mean(highs - lows)), **d_metrics})
+                  "coverage_interval_95": np.mean((real >= lows95) & (real <= highs95)),
+                  "ancho_medio_intervalo": float(np.mean(highs - lows)), **d_metrics})
     trace = valid[["finca", "bloque", "fecha_origen", "fecha_objetivo", "semana_proyeccion", "horizonte_dia"]].reset_index(drop=True)
-    trace.assign(real=real, pred=pred, low80=lows, high80=highs).to_csv(
+    trace.assign(real=real, pred=pred, low80=lows, high80=highs,
+                 low95=lows95, high95=highs95).to_csv(
         evaluation / "predictions_m3_dirichlet.csv", index=False)
     trace.assign(real=valid.target.to_numpy(), pred=pred_nb,
                   low80=intervals_nb[0], high80=intervals_nb[1],
@@ -88,7 +102,7 @@ def main():
                  low95=intervals_cov[2], high95=intervals_cov[3]).to_csv(
         evaluation / "predictions_nb_jerarquico_covariables.csv", index=False)
     pd.DataFrame(rows).to_csv(evaluation / "metrics_fase7_bayes.csv", index=False)
-    posterior.posterior_summary(cfg["bayes"]["posterior_draws"]).to_csv(models / "dirichlet_posterior_summary.csv", index=False)
+    pd.concat(summaries, ignore_index=True).to_csv(models / "dirichlet_posterior_summary.csv", index=False)
     (models / "bayes_manifest.json").write_text(json.dumps({"phase": 7, "causal": True,
         "posterior_draws": cfg["bayes"]["posterior_draws"], "models": [r["experiment_id"] for r in rows]}, indent=2), encoding="utf-8")
     print(pd.DataFrame(rows).to_string(index=False))
