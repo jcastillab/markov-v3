@@ -7,14 +7,14 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import altair as alt
-from sklearn.ensemble import RandomForestRegressor
-
 from evaluation.metrics import metrics as calculate_metrics
+from evaluation.split import temporal_masks
 from reporte_excel import (PREDICTION_FILES_FIXED, PREDICTION_FILES_ROLLING,
                            _metrics, _traces, weekly_status)
 from models.supervised import feature_groups
 from models.supervised import build_supervised_dataset
 from models.bayes import HierarchicalNB
+from models.selection import estimator_from_spec, read_selection
 from canonical import load_config
 
 
@@ -27,7 +27,8 @@ def add_weekly_status(weekly):
         lambda value: str(int(value)) if pd.notna(value) else "N.A.")
     weekly["estado_ventana"] = pd.Series(pd.NA, index=weekly.index, dtype="string")
     weekly.loc[weekly.filas_reales.eq(0), "estado_ventana"] = "PENDIENTE_REAL"
-    weekly.loc[weekly.filas_reales.eq(weekly.filas_pronosticadas), "estado_ventana"] = "VALIDA"
+    weekly.loc[weekly.filas_reales.eq(weekly.filas_pronosticadas) &
+               weekly.estado_fuente.eq("VALIDA"), "estado_ventana"] = "VALIDA"
     weekly.loc[weekly.filas_reales.between(1, weekly.filas_pronosticadas - 1), "estado_ventana"] = "PARCIAL"
     weekly["proyectado_modelo"] = weekly["proyectado"]
     weekly["proyectado_total_modelo"] = weekly["proyectado_total"]
@@ -55,6 +56,8 @@ def aggregate_weekly(daily, by_block=False):
         dias=("fecha_objetivo", "nunique"),
         filas_pronosticadas=("real", "size"),
         filas_reales=("real", "count"),
+        estado_fuente=("estado_ventana", lambda s: "VALIDA" if s.eq("VALIDA").all() else
+                       ("PENDIENTE_REAL" if s.eq("PENDIENTE_REAL").all() else "PARCIAL")),
     )
     observed = daily[daily.real.notna()].groupby(keys, as_index=False, dropna=False).agg(
         proyectado=("proyectado_modelo", "sum"))
@@ -91,12 +94,8 @@ def load_training_traces():
     windows, fact = (pd.read_parquet(datasets / name) for name in required[:2])
     intervals, pruning, climate = (pd.read_parquet(datasets / name) for name in required[2:])
     frame = build_supervised_dataset(windows, fact, intervals, cfg, pruning, climate)
-    origins = (windows.groupby(["finca", "bloque", "fecha_origen"], as_index=False)
-               .size().drop(columns="size").sort_values("fecha_origen"))
-    n_train = max(cfg["evaluation"]["min_train_windows"], int(len(origins) * .60))
-    train_keys = set(map(tuple, origins.iloc[:n_train].itertuples(index=False, name=None)))
-    train = pd.Series([tuple(x) in train_keys for x in
-                       zip(frame.finca, frame.bloque, frame.fecha_origen)], index=frame.index)
+    train_mask, _ = temporal_masks(frame, cfg, origin_values=windows["fecha_origen"])
+    train = pd.Series(train_mask, index=frame.index)
     base = frame.loc[train].copy()
     common = ["finca", "bloque", "fecha_origen", "fecha_objetivo",
               "semana_proyeccion", "horizonte_dia", "target"]
@@ -107,21 +106,19 @@ def load_training_traces():
     m3["modelo"], m3["split"] = "E00_M3_BASE", "TRAIN"
     traces.append(m3)
 
-    hyper_path = ROOT / "outputs/evaluation/metrics_hyperparametros.csv"
-    if not hyper_path.exists():
+    selection_path = ROOT / "outputs/evaluation/selected_model_manifest.json"
+    if not selection_path.exists():
         return traces
-    hyper = pd.read_csv(hyper_path).sort_values("weekly_wape").iloc[0]
-    params = json.loads(hyper["hyperparameters"])
-    params.pop("random_state", None)
-    group = feature_groups(frame)[str(hyper["features"])]
+    selected = read_selection(selection_path)
+    group = feature_groups(frame)[selected["features"]]
     cols = [c for c in dict.fromkeys(group) if c in frame.select_dtypes(include=[np.number]).columns]
     x = frame[cols].replace([np.inf, -np.inf], np.nan).fillna(0)
-    rf = RandomForestRegressor(**params, random_state=cfg["random_forest"]["random_state"], n_jobs=-1)
-    rf.fit(x.loc[train], frame.loc[train, "target"])
-    rf_trace = base[common].rename(columns={"target": "real"})
-    rf_trace["proyectado"] = rf.predict(x.loc[train])
-    rf_trace["modelo"], rf_trace["split"] = "BEST_WEEKLY_WAPE", "TRAIN"
-    traces.append(rf_trace)
+    model = estimator_from_spec(selected, cfg)
+    model.fit(x.loc[train], frame.loc[train, "target"])
+    selected_trace = base[common].rename(columns={"target": "real"})
+    selected_trace["proyectado"] = model.predict(x.loc[train])
+    selected_trace["modelo"], selected_trace["split"] = "BEST_COMPOSITE", "TRAIN"
+    traces.append(selected_trace)
 
     bayes = HierarchicalNB(cfg["bayes"]["hierarchical_shrinkage"]).fit(base)
     bayes_trace = base[common].rename(columns={"target": "real"})
@@ -143,12 +140,13 @@ def load_data(evaluation_mode):
         if "semana_proyeccion" not in frame:
             frame["semana_proyeccion"] = frame["fecha_objetivo"].dt.isocalendar().year * 100 + frame["fecha_objetivo"].dt.isocalendar().week
         frame["semana_label"] = frame["semana_proyeccion"].map(week_label)
-        frame["split"] = "VALIDATION"
+        frame["split"] = "ROLLING" if evaluation_mode == "Rolling origin" else "VALIDATION"
         frame["acierto_pct"] = (1 - (frame["real"] - frame["proyectado_modelo"]) / frame["real"].where(frame["real"] != 0)).astype(float)
         frame["error_abs"] = (frame["proyectado_modelo"] - frame["real"]).abs()
         daily.append(frame)
-    daily.extend(load_training_traces())
-    for frame in daily[len(traces):]:
+    training = load_training_traces() if evaluation_mode == "Validación fija" else []
+    daily.extend(training)
+    for frame in training:
         frame["fecha_objetivo"] = pd.to_datetime(frame["fecha_objetivo"])
         frame["semana_label"] = frame["semana_proyeccion"].map(week_label)
         frame["proyectado_modelo"] = frame["proyectado"]
@@ -202,8 +200,8 @@ st.markdown("""<style>
 </style>""", unsafe_allow_html=True)
 st.title("Markov Freedom")
 st.caption("Centro de validación causal, diagnóstico y trazabilidad de pronósticos")
-evaluation_mode = "Validación fija"
-st.sidebar.info("La tabla semanal incluye TRAIN y VALIDATION; las métricas usan solo VALIDATION.")
+evaluation_mode = st.sidebar.radio("Evaluación", ["Rolling origin", "Validación fija"])
+st.sidebar.info("Rolling origin es la comparación formal; la validación fija conserva el diagnóstico de selección.")
 metrics, daily, weekly, weekly_block = load_data(evaluation_mode)
 hyperparameter_results = load_hyperparameter_results()
 
@@ -212,8 +210,8 @@ if daily.empty:
     st.stop()
 
 models = sorted(daily.modelo.unique())
-preferred_model = ("BEST_WEEKLY_WAPE" if evaluation_mode == "Validación fija"
-                   else "RF_H1_H7_FENO")
+preferred_model = ("MODELO_SELECCIONADO_ROLLING" if evaluation_mode == "Rolling origin"
+                   else "BEST_COMPOSITE")
 default_model = preferred_model if preferred_model in models else models[0]
 model = st.sidebar.selectbox("Modelo", models + ["Todos"], index=models.index(default_model))
 farms = sorted(daily.finca.unique())
@@ -231,8 +229,9 @@ if horizon != "Todos": filtered = filtered[filtered.horizonte_dia.eq(horizon)]
 # La validación compara únicamente ventanas completas, igual que las métricas
 # semanales. Las pendientes y parciales se conservan en la tabla de detalle.
 selected_weekly = aggregate_weekly(filtered, by_block=block != "Todos")
-validation_weekly = selected_weekly[selected_weekly.split.eq("VALIDATION")]
-filtered = complete_validation_daily(filtered[filtered.split.eq("VALIDATION")], validation_weekly)
+evaluation_split = "ROLLING" if evaluation_mode == "Rolling origin" else "VALIDATION"
+validation_weekly = selected_weekly[selected_weekly.split.eq(evaluation_split)]
+filtered = complete_validation_daily(filtered[filtered.split.eq(evaluation_split)], validation_weekly)
 
 denom = filtered.real.abs().sum()
 wape = filtered.error_abs.sum() / denom if denom else float("nan")
@@ -381,7 +380,7 @@ else:
         if ablation.empty:
             st.info("Ejecute ablation_rf_m3.py para generar la comparación.")
         else:
-            base = metrics[(metrics.experiment_id == "RF_H1_H7_FENO") & metrics.n.eq(714)]
+            base = metrics[(metrics.experiment_id == "RF_H1_H7_FENO") & metrics.split.eq("VALIDATION")]
             no_m3 = ablation[(ablation.experiment_id == "RF_H1_H7_FENO_SIN_M3") &
                              ablation.horizonte.astype(str).eq("TODOS")]
             comparison = pd.DataFrame([
@@ -397,7 +396,9 @@ else:
                 tooltip=["modelo", alt.Tooltip("wape:Q", format=".2%")],
             ).properties(height=220)
             st.altair_chart(chart, use_container_width=True)
-            no_m3_rows = ablation[ablation.horizonte.astype(str).isin([str(i) for i in range(1, 8)])]
+            horizon_days = int(load_config(ROOT / "config/pipeline.yaml")["forecast"]["horizon_days"])
+            no_m3_rows = ablation[ablation.horizonte.astype(str).isin(
+                [str(i) for i in range(1, horizon_days + 1)])]
             with st.expander("Comparación por horizonte"):
                 st.dataframe(no_m3_rows, use_container_width=True, hide_index=True)
             st.caption("Esta comparación usa el mismo split temporal y los mismos hiperparámetros. La variante sin M3 fue reentrenada, no simulada eliminando columnas.")

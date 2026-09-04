@@ -37,7 +37,7 @@ def load_predictions():
     # El RF rolling usa los hiperparametros ganadores de la validacion fija.
     files = {
         "M3 BASE": (eval_dir / "predictions_e00_m3_base_rolling.csv", "proyectado"),
-        "Mejor RF": (eval_dir / "predictions_rf_mejor_hiperparametros_rolling.csv", "proyectado"),
+        "Mejor RF": (eval_dir / "predictions_modelo_seleccionado_rolling.csv", "proyectado"),
     }
     frames = {}
     for name, (path, pred_col) in files.items():
@@ -199,9 +199,7 @@ def plot_historico(weekly):
 
 def plot_model_comparison(ranking):
     """Grafico ejecutivo de WAPE y acierto global."""
-    selected = ranking[ranking.experiment_id.isin([
-        "E00_M3_BASE", "RF_H1_H7_FENO", "NB_JERARQUICO",
-        "M3_DIRICHLET_MULTINOMIAL"])]
+    selected = ranking.head(5)
     if selected.empty:
         return None
     fig, ax = plt.subplots(figsize=(10, 4.5))
@@ -243,14 +241,16 @@ def plot_feature_composition(inventory):
     climate = inventory.iloc[1]
     pruning = inventory.iloc[2]
     values = [base.Variables, climate.Variables, pruning.Variables]
-    labels = ["Base FENO\n(45)", "Clima adicional\n(74)", "Poda adicional\n(77)"]
+    labels = [f"Base FENO\n({int(base.Variables)})",
+              f"Clima adicional\n({int(climate.Variables)})",
+              f"Poda adicional\n({int(pruning.Variables)})"]
     bars = ax.bar(labels, values, color=["#2c3e50", "#2980b9", "#d99b23"])
     ax.set_ylabel("Número de variables numéricas")
     ax.set_title("Cobertura de señales por familia de features")
     ax.grid(axis="y", linestyle="--", alpha=.35)
     for bar, value in zip(bars, values):
         ax.text(bar.get_x() + bar.get_width() / 2, value + 2, str(value), ha="center", fontweight="bold")
-    ax.text(.5, -0.23, "FENO_CLIMA = 119 variables | FENO_PODA_CLIMA = 196 variables", transform=ax.transAxes,
+    ax.text(.5, -0.23, f"FENO_CLIMA = {int(base.Variables + climate.Variables)} variables", transform=ax.transAxes,
             ha="center", fontsize=10, color="#45505a")
     fig.tight_layout()
     path = OUT / "inventario_features.png"
@@ -433,6 +433,24 @@ def add_image_slide(prs, title, img_path):
 
 
 def main():
+    evaluation = ROOT / "outputs" / "evaluation"
+    ranking = pd.read_csv(evaluation / "ranking_final.csv")
+    comparison = pd.read_csv(evaluation / "metrics_comparacion_final.csv")
+    selected = json.loads((evaluation / "selected_model_manifest.json").read_text(encoding="utf-8"))
+
+    def metric(experiment_id, prefer_split="VALIDATION"):
+        rows = comparison[comparison.experiment_id.eq(experiment_id)]
+        preferred = rows[rows.split.eq(prefer_split)]
+        return (preferred if not preferred.empty else rows).sort_values("wape").iloc[0]
+
+    m3 = metric("E00_M3_BASE")
+    p32 = comparison[(~comparison.causal.astype(str).str.lower().eq("true"))].sort_values("wape").iloc[0]
+    climate = comparison[comparison.experiment_id.str.startswith("M3_CLIMA", na=False)].sort_values("wape").iloc[0]
+    bayes = metric("NB_JERARQUICO")
+    selected_validation = selected["selection"]
+    ranking_n = int(ranking.n.min())
+    champion = ranking.iloc[0]
+
     prs = Presentation()
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
@@ -482,7 +500,7 @@ def main():
             "Matrices de transición por finca y vigencia (Abril / Julio).",
             "Simulación diaria del vector de estado a partir del conteo t0.",
             "Extrapolación muestra → bloque con factor de camas.",
-            "Resultado baseline corregido: WAPE 45,90% sobre 714 días de validación causal.",
+            f"Resultado baseline: WAPE {m3.wape:.2%} sobre {int(m3.n)} días de validación causal.",
         ],
     )
     add_explanation_slide(prs, "M3: una fotografía fenológica convertida en trayectoria",
@@ -495,7 +513,7 @@ def main():
                           "Qué permite auditar",
                           ["Flujo RC → SS → AP → PC y pérdidas por estado.",
                            "AP→PC La Pradera: 47,78% Abril; 32,12% Julio.",
-                           "WAPE causal corregido: 45,90%; sesgo: -24,64%."], "C0392B")
+                            f"WAPE causal: {m3.wape:.2%}; sesgo: {m3.bias_pct:.2%}."], "C0392B")
 
     # Riesgo / P32
     add_bullet_slide(
@@ -505,7 +523,7 @@ def main():
             "Aporta duración dentro del estado y edad latente del stock.",
             "P32 normalizado: 1.297 observaciones, 514 intervalos válidos.",
             "Se corrigió concentración artificial de edad inicial en cero.",
-            "Resultado retrospectivo mejor: M3-P32 REG con WAPE 34,53%.",
+            f"Mejor resultado retrospectivo: {p32.experiment_id}, WAPE {p32.wape:.2%}.",
             "No es causal para ventanas históricas: P32 se levantó después.",
         ],
     )
@@ -517,7 +535,7 @@ def main():
                            "Variables: estado macro, edad, evento y exposición.",
                            "Hazards RC/SS/AP con suavizado hacia M3."],
                           "Lectura correcta del resultado",
-                          ["M3-P32 regularizado: WAPE 34,53%.",
+                          [f"Mejor P32 retrospectivo: {p32.experiment_id}, WAPE {p32.wape:.2%}.",
                            "No se mezcla con el ranking: P32 fue capturado después de las ventanas.",
                            "Valor actual: aprender duración; no operar el resultado retrospectivo."], "8E44AD")
 
@@ -529,7 +547,7 @@ def main():
             "Podas: features CORTE/ALINEAMIENTO con lags de 42-84 días.",
             "Podas no mejoraron WAPE; quedan documentadas como challenger.",
             "Clima LA PRADERA: VPD, GDD, DLI estimado, lluvia, ET0.",
-            "Mejor challenger clima: WAPE 48,84%, solo +0,16 pp sobre baseline.",
+            f"Mejor challenger M3-clima: WAPE {climate.wape:.2%} en su población local.",
             "Cobertura limitada a una finca y sin microclima de invernadero.",
         ],
     )
@@ -543,23 +561,23 @@ def main():
         prs,
         "3. Random Forest: champion provisional",
         [
-            "El mejor RF por hiperparámetros usa FENO_CLIMA y modelo Poisson.",
-            "Mantiene split temporal causal y 714 observaciones.",
-            "Mejor RF: WAPE diario 24,59% y semanal 15,06%.",
-            "La selección prioriza WAPE semanal para el contraste operativo.",
+            f"El modelo seleccionado es {selected['model']}.",
+            f"Usa {selected['features']} y la familia {selected['family']}.",
+            f"Selección temporal: WAPE diario {selected_validation['daily_wape']:.2%} y semanal {selected_validation['weekly_wape']:.2%}.",
+            "La selección compuesta prioriza la escala semanal y se verifica en rolling-origin.",
             "Requiere validación congelada adicional antes de promoción operacional.",
         ],
     )
     add_explanation_slide(prs, "Random Forest: aprende la relación no lineal con el corte",
-                           "Combina señales fenológicas, clima, historial y escala de camas",
-                           "corte = f(fenología, M3, historial, exposición)",
-                           "Variables usadas por FENO_CLIMA",
-                           ["119 variables: 45 base + 74 climáticas causales.",
-                            "Base: conteos t0, proporciones, log1p, M3, camas e historial de cortes.",
-                            "Clima: VPD, GDD, DLI, temperatura, lluvia y ET0 en ventanas 1-56 días."],
+                           "Combina señales fenológicas, operativas, climáticas, historial y escala",
+                           "corte = f(fenología, poda, clima, historial, exposición)",
+                           "Variables usadas por el modelo seleccionado",
+                           [f"Grupo seleccionado: {selected['features']}.",
+                            "Base: conteos t0, proporciones, M3, camas e historial de cortes.",
+                            "Señales adicionales: podas/alineamiento rezagados y clima causal."],
                            "Control y resultado",
                            ["Se detectó VIF alto en agregados de corte, proporciones y logs; RF tolera redundancia, pero reparte importancia.",
-                            "Mejor RF exploratorio: WAPE diario 24,59%; semanal 15,06%.",
+                            f"Selección temporal: WAPE diario {selected_validation['daily_wape']:.2%}; semanal {selected_validation['weekly_wape']:.2%}.",
                             "Validación temporal fija y rolling; falta tercer periodo congelado."], "27AE60")
 
     # Bayesiano
@@ -569,7 +587,7 @@ def main():
         [
             "Dirichlet-Multinomial: posterior de matrices de transición centrado en M3.",
             "NB jerárquico: Gamma-Poisson con pooling por finca, bloque y horizonte.",
-            "NB jerárquico: WAPE 35,61%, mejor Bayesiano causal.",
+            f"NB jerárquico: WAPE {bayes.wape:.2%} en validación fija causal.",
             "Cobertura de intervalos inferior a la nominal: no usable para incertidumbre aún.",
             "Dirichlet-Multinomial no superó el baseline M3.",
         ],
@@ -582,17 +600,16 @@ def main():
                            "Variables de agrupación: finca, bloque y día de horizonte.",
                            "Posterior Dirichlet adicional para matrices M3."],
                           "Resultado y limitación",
-                          ["NB jerárquico: WAPE 35,61%, mejor Bayesiano causal.",
-                           "Cobertura: 16,1% al 80% y 23,4% al 95%; está descalibrada.",
+                           [f"NB jerárquico: WAPE {bayes.wape:.2%}, mejor Bayesiano causal.",
+                            f"Cobertura: {bayes.coverage_interval_80:.1%} al 80% y {bayes.coverage_interval_95:.1%} al 95%; está descalibrada.",
                            "Aporta pooling para bloques escasos, no intervalos operativos todavía."], "2980B9")
 
     # Ranking final
-    ranking = pd.read_csv(ROOT / "outputs" / "evaluation" / "ranking_final.csv")
     ranking_display = ranking.head(5)[["experiment_id", "wape", "acierto_global", "decision"]].copy()
     ranking_display["wape"] = ranking_display["wape"].apply(lambda x: f"{x:.2%}")
     ranking_display["acierto_global"] = ranking_display["acierto_global"].apply(lambda x: f"{x:.2%}")
     ranking_display.columns = ["Modelo", "WAPE", "Acierto", "Decisión"]
-    add_table_slide(prs, "5. Ranking final causal (714 observaciones)", ranking_display)
+    add_table_slide(prs, f"5. Ranking rolling causal ({ranking_n} observaciones comunes)", ranking_display)
     comparison_path = plot_model_comparison(ranking)
     if comparison_path:
         add_image_slide(prs, "Lectura ejecutiva del desempeño", comparison_path)
@@ -634,7 +651,7 @@ def main():
         prs,
         "Conclusiones y próximos pasos",
         [
-            "La comparación operativa usa el mejor RF por hiperparámetros, M3 y NB jerárquico.",
+            f"El champion provisional rolling es {champion.experiment_id}, con WAPE {champion.wape:.2%}.",
             "M3 permanece como baseline mecanicista obligatorio y referencia.",
             "Bayesiano mejora el baseline pero aún no entrega incertidumbre calibrada.",
             "P32 y clima son prometedores pero requieren datos contemporáneos.",

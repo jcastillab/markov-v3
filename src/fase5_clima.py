@@ -10,6 +10,7 @@ import pandas as pd
 
 from canonical import load_config
 from evaluation.metrics import metrics
+from evaluation.split import validation_start
 from models.climate import (build_climate_features, build_daily_climate,
                             load_hourly_climate)
 from models.m3 import _period_for_date, fit_m3, simulate
@@ -19,8 +20,9 @@ def _split(windows, cfg):
     origins = (windows.groupby(["finca", "bloque", "fecha_origen"], as_index=False)
                .agg(ventana_evaluable=("ventana_evaluable", "first"))
                .sort_values("fecha_origen"))
-    n = max(cfg["evaluation"]["min_train_windows"], int(len(origins) * 0.60))
-    return origins.iloc[:n], origins.iloc[n:][lambda x: x.ventana_evaluable]
+    cutoff = validation_start(origins["fecha_origen"], cfg)
+    return (origins[pd.to_datetime(origins.fecha_origen).lt(cutoff)],
+            origins[pd.to_datetime(origins.fecha_origen).ge(cutoff) & origins.ventana_evaluable])
 
 
 def _modify(matrix, signal, coefficient, mode):
@@ -65,7 +67,7 @@ def main():
     origins = pd.concat([train_origins, val_origins], ignore_index=True)
     features = build_climate_features(daily, origins, cfg)
     features.to_parquet(datasets / "clima_features.parquet", index=False)
-    feature_col = "gdd5_0_sum_7d"
+    feature_col = cfg["climate"]["model_feature"]
     train_signal = features[features.fecha_origen.isin(train_origins.fecha_origen)][feature_col]
     mean, std = train_signal.mean(), train_signal.std() or 1.0
     signals = ((features[feature_col] - mean) / std).fillna(0.0)
@@ -99,8 +101,8 @@ def main():
                          **metrics(pd.Series(real), pd.Series(pred))})
     result = pd.DataFrame(rows)
     result.to_csv(evaluation / "metrics_fase5_clima.csv", index=False)
-    (models / "clima_manifest.json").write_text(pd.Series({"station_id": 746,
-        "source": "EXTERIOR_ESTACION", "microclima_invernadero_disponible": False,
+    (models / "clima_manifest.json").write_text(pd.Series({"station_id": cfg["climate"]["station_by_farm"]["LA PRADERA"],
+        "source": cfg["climate"]["fuente"], "microclima_invernadero_disponible": cfg["climate"]["microclima_invernadero_disponible"],
         "causal": True, "n_hourly": len(hourly), "n_daily": len(daily)}).to_json(indent=2), encoding="utf-8")
     print(result.to_string(index=False))
 

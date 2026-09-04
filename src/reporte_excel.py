@@ -23,7 +23,6 @@ except ModuleNotFoundError:
 GREEN, YELLOW, RED, BLUE, DARK = "C6EFCE", "FFEB9C", "FFC7CE", "D9EAF7", "1F4E78"
 
 PREDICTION_FILES = {
-    "E00_M3_BASE": "outputs/evaluation/predictions_e00_m3_base_rolling.csv",
     "E01_M3_INGRESO_CALIBRADO": "outputs/predictions/E01_M3_INGRESO_CALIBRADO.csv",
     "E02_M3_P32_RAW": "outputs/predictions/E02_M3_P32_RAW.csv",
     "E03_M3_P32_CANONICO": "outputs/predictions/E03_M3_P32_CANONICO.csv",
@@ -36,7 +35,7 @@ PREDICTION_FILES = {
     "RF_DIARIO_POOLED_FENO_CLIMA": "outputs/evaluation/predictions_feno_clima.csv",
     "RF_DIARIO_POOLED_FENO_PODA_CLIMA": "outputs/evaluation/predictions_feno_poda_clima.csv",
     "RF_RESIDUAL_M3_FENO": "outputs/evaluation/predictions_rf_residual_m3_feno.csv",
-    "RF_H1_H7_FENO": "outputs/evaluation/predictions_rf_h1_h7_feno_rolling.csv",
+    "RF_H1_H7_FENO": "outputs/evaluation/predictions_rf_h1_h7_feno.csv",
     "GLM_NB_FENO": "outputs/evaluation/predictions_glm_nb_feno.csv",
     "GLM_NB_FENO_PODA": "outputs/evaluation/predictions_glm_nb_feno_poda.csv",
     "GLM_NB_FENO_CLIMA": "outputs/evaluation/predictions_glm_nb_feno_clima.csv",
@@ -52,13 +51,13 @@ PREDICTION_FILES_FIXED = {
     "RF_H1_H7_FENO": "outputs/evaluation/predictions_rf_h1_h7_feno.csv",
     "BEST_WEEKLY_WAPE": "outputs/evaluation/predictions_best_weekly_wape.csv",
     "RF_BEST_WEEKLY_R2": "outputs/evaluation/predictions_best_weekly_r2.csv",
-    "RF_BEST_COMPOSITE": "outputs/evaluation/predictions_best_composite.csv",
+    "BEST_COMPOSITE": "outputs/evaluation/predictions_best_composite.csv",
     "RF_H1_H7_FENO_SIN_M3": "outputs/evaluation/predictions_rf_h1_h7_feno_sin_m3.csv",
 }
 
 PREDICTION_FILES_ROLLING = {
-    "E00_M3_BASE": "outputs/evaluation/predictions_e00_m3_base_rolling.csv",
-    "RF_H1_H7_FENO": "outputs/evaluation/predictions_rf_h1_h7_feno_rolling.csv",
+    "E00_M3_BASE_ROLLING": "outputs/evaluation/predictions_e00_m3_base_rolling.csv",
+    "MODELO_SELECCIONADO_ROLLING": "outputs/evaluation/predictions_modelo_seleccionado_rolling.csv",
 }
 
 
@@ -81,7 +80,9 @@ def _metrics(root: Path) -> pd.DataFrame:
         frames.append(frame)
     result = pd.concat(frames, ignore_index=True, sort=False)
     result["causal"] = result["causal"].astype(str).str.lower().eq("true")
-    result["comparacion_primaria"] = result["causal"] & result["n"].eq(714) & result["split"].eq("VALIDATION")
+    cfg = load_config(root / "config/pipeline.yaml")
+    champion_split = cfg["evaluation"]["champion_split"]
+    result["comparacion_primaria"] = result["causal"] & result["split"].eq(champion_split)
     return result
 
 
@@ -97,6 +98,8 @@ def _traces(root: Path, prediction_files: dict[str, str] | None = None) -> dict[
         if real_col not in frame or pred_col not in frame:
             continue
         frame = frame.rename(columns={pred_col: "proyectado", real_col: "real"})
+        if "estado_ventana" not in frame:
+            frame["estado_ventana"] = "VALIDA"
         frame["proyectado_modelo"] = frame["proyectado"]
         frame["proyectado"] = np.ceil(frame["proyectado_modelo"])
         frame["modelo"] = model
@@ -188,20 +191,26 @@ def _add_semaphores(ws, row_end: int, headers: list[str]):
 
 
 def build_workbook(root: Path) -> Path:
-    cfg, metrics, traces = load_config(root / "config/pipeline.yaml"), _metrics(root), _traces(root)
+    cfg, metrics = load_config(root / "config/pipeline.yaml"), _metrics(root)
+    traces = _traces(root, {**PREDICTION_FILES, **PREDICTION_FILES_ROLLING})
     acierto_by_model = {}
     for model, frame in traces.items():
         acierto_by_model[model] = np.where(frame.real != 0,
             1 - (frame.real - frame.proyectado_modelo) / frame.real, np.nan).mean()
+        if "modelo_seleccionado" in frame and frame.modelo_seleccionado.notna().any():
+            acierto_by_model[str(frame.modelo_seleccionado.dropna().iloc[0])] = acierto_by_model[model]
     reports = root / cfg["paths"]["outputs"] / "reports"; reports.mkdir(parents=True, exist_ok=True)
     output = reports / "tablero_rendimiento_modelos.xlsx"
     wb = Workbook(); intro = wb.active; intro.title = "INICIO"
     intro.append(["Tablero de rendimiento - Pronóstico Freedom"])
     intro["A1"].font = Font(bold=True, size=18, color="FFFFFF"); intro["A1"].fill = PatternFill("solid", fgColor=DARK)
     intro.merge_cells("A1:F1")
+    primary = metrics[metrics.comparacion_primaria].sort_values("wape").drop_duplicates("experiment_id").copy()
+    population_n = int(primary.n.min()) if not primary.empty else 0
+    champion_split = cfg["evaluation"]["champion_split"]
     intro_rows = [
         ("Uso", "Filtre las hojas METRICAS, SEMANAL y DIARIO por modelo, finca, bloque y fecha."),
-        ("Ranking primario", "Solo VALIDATION causal diaria n=714. No mezcla P32 retrospectivo, clima parcial ni métricas semanales."),
+        ("Ranking primario", f"Solo {champion_split} causal diaria n={population_n}. No mezcla P32 retrospectivo ni poblaciones o escalas distintas."),
         ("Acierto", "Se calcula como 1 - (real - proyectado) / real, tanto diario como semanal. Para real=0 queda N.A.; no se deriva de WAPE."),
         ("Semáforo semanal", "ACIERTO: precisión relativa entre 93%-107%; CERCA: 90%-92,9% o 107,1%-110%; NO ACIERTO: fuera de rangos."),
         ("Semáforo de error", "WAPE <=30% verde; >30%-55% amarillo; >55% rojo. MAE/RMSE usan escala relativa de la tabla: menor es verde."),
@@ -212,11 +221,10 @@ def build_workbook(root: Path) -> Path:
     intro.column_dimensions["A"].width = 24; intro.column_dimensions["B"].width = 115
     for cell in intro["A"][1:]: cell.font = Font(bold=True)
 
-    primary = metrics[metrics.comparacion_primaria].sort_values("wape").drop_duplicates("experiment_id").copy()
     primary["wape_pct"] = primary.wape; primary["acierto_pct"] = primary.experiment_id.map(acierto_by_model)
     summary_cols = ["experiment_id", "wape_pct", "acierto_pct", "mae", "rmse", "r2", "bias_pct", "n"]
     ws = wb.create_sheet("RESUMEN")
-    end = _write_table(ws, primary[summary_cols], "Ranking primario: VALIDATION causal diaria n=714", {"wape_pct", "acierto_pct", "bias_pct"})
+    end = _write_table(ws, primary[summary_cols], f"Ranking primario: {champion_split} causal diaria n={population_n}", {"wape_pct", "acierto_pct", "bias_pct"})
     ws.conditional_formatting.add(f"B3:B{end}", ColorScaleRule(start_type="min", start_color=GREEN, mid_type="percentile", mid_value=50, mid_color=YELLOW, end_type="max", end_color=RED))
     _add_semaphores(ws, end, list(primary[summary_cols].columns))
     chart = BarChart(); chart.title = "WAPE de modelos comparables"; chart.y_axis.title = "WAPE"; chart.height = 9; chart.width = 18
@@ -229,8 +237,8 @@ def build_workbook(root: Path) -> Path:
     _add_semaphores(ws, end, list(detail.columns))
 
     expected = set()
-    if "E00_M3_BASE" in traces:
-        base = traces["E00_M3_BASE"]
+    if "E00_M3_BASE_ROLLING" in traces:
+        base = traces["E00_M3_BASE_ROLLING"]
         expected = set(map(tuple, base[["finca", "semana_proyeccion"]].drop_duplicates().itertuples(index=False, name=None)))
     coverage_rows, weekly_frames, daily_frames = [], [], []
     for model, frame in traces.items():
@@ -244,8 +252,12 @@ def build_workbook(root: Path) -> Path:
             fecha_origen=("fecha_origen", "min"), real_semana=("real", lambda s: s.sum(min_count=1)),
             proyectado_semana_modelo=("proyectado_modelo", lambda s: s[daily.loc[s.index, "real"].notna()].sum()),
             proyectado_semana_total_modelo=("proyectado_modelo", "sum"), dias_pronosticados=("fecha_objetivo", "nunique"),
-            filas_pronosticadas=("real", "size"), filas_reales=("real", "count"))
-        weekly["estado_ventana"] = np.select([weekly.filas_reales.eq(0), weekly.filas_reales.eq(weekly.filas_pronosticadas)], ["PENDIENTE_REAL", "VALIDA"], default="PARCIAL")
+            filas_pronosticadas=("real", "size"), filas_reales=("real", "count"),
+            estado_fuente=("estado_ventana", lambda s: "VALIDA" if s.eq("VALIDA").all() else
+                           ("PENDIENTE_REAL" if s.eq("PENDIENTE_REAL").all() else "PARCIAL")))
+        weekly["estado_ventana"] = np.select(
+            [weekly.filas_reales.eq(0), weekly.filas_reales.eq(weekly.filas_pronosticadas) & weekly.estado_fuente.eq("VALIDA")],
+            ["PENDIENTE_REAL", "VALIDA"], default="PARCIAL")
         weekly["proyectado_semana"] = np.ceil(weekly["proyectado_semana_modelo"])
         weekly["proyectado_semana_total"] = np.ceil(weekly["proyectado_semana_total_modelo"])
         weekly["ratio_proyeccion_pct"] = np.where(weekly.filas_reales.gt(0) & weekly.real_semana.ne(0), weekly.proyectado_semana_modelo / weekly.real_semana, np.nan)

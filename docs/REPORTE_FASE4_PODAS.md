@@ -11,15 +11,15 @@
 
 ## Validacion
 
-La poblacion es la misma validacion causal de Fase 2: 714 dias evaluables.
-El baseline se reproduce con WAPE 55,52%.
+La poblacion es la misma validacion causal de Fase 2: 1.295 dias evaluables.
+El baseline se reproduce con WAPE 45,94%.
 
 | Experimento | Mejor WAPE | Coeficiente | Estado |
 |---|---:|---:|---|
-| M3_BASE | 55,52% | 0,00 | Baseline causal |
-| M3_PODA_INGRESO | 55,52% | 0,00 | No promovido |
-| M3_PODA_TRANSICION | 55,52% | 0,00 | No promovido |
-| M3_PODA_HIBRIDO | 55,52% | 0,00 | No promovido |
+| M3_BASE | 45,94% | 0,00 | Baseline causal |
+| M3_PODA_INGRESO | 45,94% | 0,00 | No promovido |
+| M3_PODA_TRANSICION | 45,94% | 0,00 | No promovido |
+| M3_PODA_HIBRIDO | 45,94% | 0,00 | No promovido |
 
 Los coeficientes positivos empeoran el WAPE. No se agrega masa: el ingreso
 esta acotado y las columnas de transición se renormalizan conservando la

@@ -21,16 +21,17 @@
 
 ## Evaluacion
 
-La validacion usa 476 dias evaluables de LA PRADERA. El baseline local obtiene
-WAPE 49,04%. El mejor resultado exploratorio es `M3_CLIMA_TRANSICION` con
-coeficiente 0,10 y WAPE 48,84%, una mejora de 0,16 puntos porcentuales.
+La validacion usa 952 dias evaluables de LA PRADERA. El baseline local obtiene
+WAPE 45,75%. Los mejores resultados exploratorios son `M3_CLIMA_INGRESO` y
+`M3_CLIMA_HIBRIDO`, ambos con coeficiente 0,10 y WAPE 44,27%, una mejora de
+1,48 puntos porcentuales.
 El coeficiente fue explorado sobre esta validacion externa, por lo que no se
 promueve sin una validacion interna y una prueba de estabilidad por bloque y
 periodo.
 
-La variante de ingreso no mejora el baseline. La variante de transicion mejora
-ligeramente en el agregado, mientras la hibrida no lo hace. M3 continua siendo
-el baseline oficial y el challenger queda etiquetado como exploratorio.
+Las variantes de ingreso e hibrida mejoran ligeramente el agregado local; la
+de transicion alcanza 44,56%. M3 continua siendo el baseline oficial y el
+challenger queda etiquetado como exploratorio.
 
 ## Artefactos
 

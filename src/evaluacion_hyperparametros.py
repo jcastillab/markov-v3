@@ -1,6 +1,6 @@
 """Busqueda causal de modelos de conteo y hiperparametros.
 
-La validacion conserva los mismos origenes 60/40 de Fase 6. Se reportan
+La validacion conserva fechas de origen completas en el corte temporal. Se reportan
 metricas diarias y semanales porque un R2 semanal alto no implica buen ajuste
 por bloque y dia.
 """
@@ -19,16 +19,12 @@ from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor,
 
 from canonical import load_config
 from evaluation.metrics import metrics
+from evaluation.split import selection_masks
 from models.supervised import build_supervised_dataset, feature_groups
 
 
 def split_frame(frame, windows, cfg):
-    origins = (windows.groupby(["finca", "bloque", "fecha_origen"], as_index=False)
-               .size().drop(columns="size").sort_values("fecha_origen"))
-    n_train = max(cfg["evaluation"]["min_train_windows"], int(len(origins) * .60))
-    keys = set(map(tuple, origins.iloc[:n_train].itertuples(index=False, name=None)))
-    valid = np.array([tuple(x) in keys for x in zip(frame.finca, frame.bloque, frame.fecha_origen)])
-    return valid, ~valid
+    return selection_masks(frame, cfg, windows["fecha_origen"])
 
 
 def score(y, pred, frame):
@@ -70,7 +66,7 @@ def fit_rf_experiment(name, cols, x, y, train, valid, frame, params, model_n_job
     return row, pred
 
 
-def add_selection_scores(result):
+def add_selection_scores(result, cfg):
     """Rankea todas las metricas y crea un score compuesto orientado a semana."""
     lower_metrics = ["wape", "mae", "rmse"]
     scopes = ("daily", "weekly")
@@ -82,10 +78,11 @@ def add_selection_scores(result):
         result[f"rank_{bias}"] = result[bias].abs().rank(method="min", pct=True)
         r2 = f"{scope}_r2"
         result[f"rank_{r2}"] = 1 - result[r2].rank(method="min", pct=True)
-    weights = {"wape": 0.30, "mae": 0.15, "rmse": 0.15, "bias_pct": 0.15, "r2": 0.25}
+    weights = cfg["evaluation"]["selection_metric_weights"]
     weekly_score = sum(weights[m] * result[f"rank_weekly_{m}"] for m in weights)
     daily_score = sum(weights[m] * result[f"rank_daily_{m}"] for m in weights)
-    result["selection_score"] = 0.70 * weekly_score + 0.30 * daily_score
+    scope = cfg["evaluation"]["selection_scope_weights"]
+    result["selection_score"] = scope["weekly"] * weekly_score + scope["daily"] * daily_score
     return result
 
 
@@ -178,12 +175,13 @@ def main():
         model.fit(x[train], y[train])
         pred = model.predict(x[valid])
         hyperparameters = model.get_params(deep=False)
-        rows.append({"model": key, "family": "TREE_CHALLENGER", "features": "FENO",
+        family = "EXTRA_TREES" if isinstance(model, ExtraTreesRegressor) else "HIST_GRADIENT_BOOSTING"
+        rows.append({"model": key, "family": family, "features": "FENO",
                      "hyperparameters": json.dumps(hyperparameters, sort_keys=True, default=str),
                      **score(y[valid], pred, frame.loc[valid])})
         predictions[key] = pred
 
-    result = add_selection_scores(pd.DataFrame(rows))
+    result = add_selection_scores(pd.DataFrame(rows), cfg)
     result = result.sort_values("selection_score")
     result.to_csv(evaluation / "metrics_hyperparametros.csv", index=False)
     selection_targets = {
@@ -207,6 +205,25 @@ def main():
                 result_for_selection["_selection"] = result_for_selection[column]
             result_for_selection = result_for_selection.sort_values("_selection")
         write_selected_prediction(label, result_for_selection, predictions, frame, valid, evaluation)
+    selection_target = cfg["evaluation"]["model_selection_target"]
+    selected_path = evaluation / f"predictions_best_{selection_target}.csv"
+    selected = pd.read_csv(selected_path, nrows=1).iloc[0]
+    manifest = {
+        "model": selected["model"],
+        "family": selected["family"],
+        "features": selected["features"],
+        "selected_by": selection_target,
+        "hyperparameters": json.loads(selected["hyperparameters"]),
+        "selection": {
+            key: float(selected[key]) for key in (
+                "daily_wape", "daily_r2", "weekly_wape", "weekly_r2", "selection_score"
+            )
+        },
+        "selection_rows": int(valid.sum()),
+    }
+    (evaluation / "selected_model_manifest.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     print(result.head(20).to_string(index=False))
 
 

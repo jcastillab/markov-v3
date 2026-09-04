@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import sys
-import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestRegressor
-
-from canonical import load_config
-from evaluation.metrics import metrics
-from models.m3 import _period_for_date, fit_m3, simulate
-from models.supervised import build_supervised_dataset, feature_groups
+try:
+    from canonical import load_config
+    from evaluation.metrics import metrics
+    from evaluation.split import holdout_start
+    from models.m3 import _period_for_date, fit_m3, simulate
+    from models.selection import estimator_from_spec, read_selection
+    from models.supervised import build_supervised_dataset, feature_groups
+except ModuleNotFoundError:
+    from src.canonical import load_config
+    from src.evaluation.metrics import metrics
+    from src.evaluation.split import holdout_start
+    from src.models.m3 import _period_for_date, fit_m3, simulate
+    from src.models.selection import estimator_from_spec, read_selection
+    from src.models.supervised import build_supervised_dataset, feature_groups
 
 
 def _m3_predictions(windows, intervals, cfg):
@@ -33,40 +40,61 @@ def _m3_predictions(windows, intervals, cfg):
     return pd.DataFrame(rows)
 
 
-def _rf_predictions(frame, cfg, selected_params=None):
+KEY_COLUMNS = ["finca", "bloque", "fecha_origen", "fecha_objetivo", "horizonte_dia"]
+
+
+def _selected_predictions(frame, cfg, selected, evaluation_start=None):
     groups = feature_groups(frame)
-    cols = list(dict.fromkeys(c for c in groups["FENO"] if c in frame.select_dtypes(include=[np.number]).columns))
+    feature_name = selected["features"]
+    if feature_name not in groups:
+        raise ValueError(f"Grupo de features seleccionado no disponible: {feature_name}")
+    numeric = frame.select_dtypes(include=[np.number]).columns
+    cols = list(dict.fromkeys(c for c in groups[feature_name] if c in numeric and c != "target"))
+    if not cols:
+        raise ValueError(f"El grupo {feature_name} no contiene features numericas")
     x_all = frame[cols].replace([np.inf, -np.inf], np.nan).fillna(0)
     origins = sorted(pd.to_datetime(frame.fecha_origen).unique())
     min_origins = int(cfg["supervised"]["rolling_min_train_origins"])
-    rf_cfg = cfg["random_forest"]
     predictions = []
-    params = selected_params or {
-        "n_estimators": cfg["random_forest"]["n_estimators"],
-        "max_depth": cfg["random_forest"]["max_depth_grid"][0],
-        "min_samples_leaf": cfg["random_forest"]["min_samples_leaf_grid"][0],
-        "min_samples_split": cfg["random_forest"]["min_samples_split_grid"][0],
-        "max_features": cfg["random_forest"]["max_features"][0],
-        "criterion": cfg["random_forest"]["criterion_grid"][0],
-    }
     for position, origin in enumerate(origins):
         if position < min_origins:
             continue
+        if evaluation_start is not None and origin < evaluation_start:
+            continue
         current = pd.to_datetime(frame.fecha_origen).eq(origin).to_numpy()
-        previous = (pd.to_datetime(frame.fecha_origen) < origin).to_numpy() & frame.target.notna().to_numpy()
+        previous = ((pd.to_datetime(frame.fecha_origen) < origin) &
+                    (pd.to_datetime(frame.fecha_objetivo) < origin) &
+                    frame.target.notna()).to_numpy()
         if previous.sum() == 0 or current.sum() == 0:
             continue
-        model = RandomForestRegressor(**params,
-            random_state=rf_cfg["random_state"], n_jobs=-1)
+        model = estimator_from_spec(selected, cfg)
         model.fit(x_all[previous], frame.loc[previous, "target"])
         pred = model.predict(x_all[current])
         current_frame = frame.loc[current, ["finca", "bloque", "fecha_origen", "fecha_objetivo",
                                             "semana_proyeccion", "horizonte_dia", "estado_ventana", "target"]].copy()
         current_frame = current_frame.rename(columns={"target": "real"})
-        current_frame["modelo"] = "RF_MEJOR_HIPERPARAMETROS_ROLLING"
+        current_frame["modelo"] = "MODELO_SELECCIONADO_ROLLING"
+        current_frame["modelo_seleccionado"] = selected["model"]
+        current_frame["familia"] = selected["family"]
+        current_frame["features"] = feature_name
         current_frame["proyectado"] = pred
         predictions.append(current_frame)
     return pd.concat(predictions, ignore_index=True)
+
+
+def _common_observed(left, right):
+    """Recorta ambos modelos a exactamente las mismas claves con real observado."""
+    left_valid = left[left.real.notna()].copy()
+    right_valid = right[right.real.notna()].copy()
+    common = left_valid[KEY_COLUMNS].merge(
+        right_valid[KEY_COLUMNS], on=KEY_COLUMNS, how="inner"
+    ).drop_duplicates()
+    if common.empty:
+        raise ValueError("M3 y el modelo seleccionado no tienen observaciones rolling comunes")
+    return (
+        left_valid.merge(common, on=KEY_COLUMNS, how="inner"),
+        right_valid.merge(common, on=KEY_COLUMNS, how="inner"),
+    )
 
 
 def _metrics_by_week(frame):
@@ -79,8 +107,10 @@ def _metrics_by_week(frame):
             continue
         error = observed.proyectado - observed.real
         denom = observed.real.abs().sum()
+        complete = (len(observed) == len(group) and
+                    ("estado_ventana" not in group or group.estado_ventana.eq("VALIDA").all()))
         rows.append({"modelo": model, "finca": finca, "semana_proyeccion": week,
-                     "estado": "VALIDA" if len(observed) == len(group) else "PARCIAL",
+                     "estado": "VALIDA" if complete else "PARCIAL",
                      "n_dias_reales": len(observed), "n_dias_pronosticados": len(group),
                      "real_comparable": observed.real.sum(), "proyectado_comparable": observed.proyectado.sum(),
                      "proyectado_total": group.proyectado.sum(),
@@ -103,24 +133,30 @@ def main():
     climate = pd.read_parquet(datasets / "clima_features.parquet")
     frame = build_supervised_dataset(windows, fact, intervals, cfg, pruning, climate, include_incomplete=True)
     m3 = _m3_predictions(windows, intervals, cfg)
-    selected_params = None
-    selected_path = evaluation / "predictions_best_weekly_wape.csv"
-    if selected_path.exists():
-        selected = pd.read_csv(selected_path, nrows=1).iloc[0]
-        selected_params = json.loads(selected["hyperparameters"])
-        selected_params.pop("random_state", None)
-    rf = _rf_predictions(frame, cfg, selected_params)
-    for model, predictions in (("E00_M3_BASE_ROLLING", m3),
-                               ("RF_MEJOR_HIPERPARAMETROS_ROLLING", rf)):
+    selected = read_selection(evaluation / "selected_model_manifest.json")
+    evaluation_start = holdout_start(windows["fecha_origen"], cfg)
+    challenger = _selected_predictions(frame, cfg, selected, evaluation_start)
+    m3_common, challenger_common = _common_observed(m3, challenger)
+    for model, predictions in (("E00_M3_BASE_ROLLING", m3_common),
+                               ("MODELO_SELECCIONADO_ROLLING", challenger_common)):
         predictions.to_csv(evaluation / f"predictions_{model.lower()}.csv", index=False)
-    weekly = pd.concat([_metrics_by_week(m3), _metrics_by_week(rf)], ignore_index=True)
+    weekly = pd.concat([_metrics_by_week(m3_common), _metrics_by_week(challenger_common)], ignore_index=True)
     weekly.to_csv(evaluation / "metrics_rolling_origin_semanal.csv", index=False)
     daily_metrics = []
-    for model, group in pd.concat([m3, rf]).groupby("modelo"):
+    prediction_files = {
+        "E00_M3_BASE_ROLLING": "predictions_e00_m3_base_rolling.csv",
+        "MODELO_SELECCIONADO_ROLLING": "predictions_modelo_seleccionado_rolling.csv",
+    }
+    for model, group in pd.concat([m3_common, challenger_common]).groupby("modelo"):
         observed = group[group.real.notna()]
         if observed.empty:
             continue
-        daily_metrics.append({"modelo": model, "nivel": "DIARIO_OBSERVADO", "n": len(observed),
+        experiment_id = "E00_M3_BASE_ROLLING" if model.startswith("E00") else selected["model"]
+        daily_metrics.append({"experiment_id": experiment_id, "modelo": model,
+                              "family": "M3" if model.startswith("E00") else selected["family"],
+                              "features": "FENO_M3" if model.startswith("E00") else selected["features"],
+                              "split": "ROLLING_ORIGIN_COMMON", "causal": True,
+                              "nivel": "DIARIO_OBSERVADO", "prediction_file": prediction_files[model],
                               **metrics(observed.real, observed.proyectado)})
     pd.DataFrame(daily_metrics).to_csv(evaluation / "metrics_rolling_origin.csv", index=False)
     print(weekly.groupby(["modelo", "estado"]).size().to_string())

@@ -19,31 +19,29 @@ Reglas que guiaron el trabajo:
 
 ## 2. Resumen ejecutivo
 
-El pipeline completo se implemento en ocho fases. El resultado formal de Fase 8
-selecciono provisionalmente `RF_H1_H7_FENO` como champion de investigacion, con
-validacion causal comun de 714 observaciones y WAPE de 27,92 por ciento en el
-artefacto actual de ranking.
+El pipeline completo se implemento en ocho fases. La evaluacion formal vigente
+selecciona provisionalmente
+`RF_FENO_PODA_CLIMA_n200_d3_l5_s20_fsqrt_poisson` como champion de
+investigacion. En el holdout rolling-origin causal obtiene WAPE de 30,57 por
+ciento sobre 441 observaciones comunes, frente a 57,59 por ciento de M3.
 
 La busqueda adicional de hiperparametros evaluo 576 combinaciones de RF y dos
 challengers. La seleccion se amplio a WAPE, MAE, RMSE, sesgo absoluto y R2,
-en escalas diaria y semanal. El mejor RF por R2 semanal y el score compuesto
-fue:
+en escalas diaria y semanal. El mejor RF por score compuesto fue:
 
 ```text
-RF_FENO_CLIMA_n200_d10_l2_s10_f0.5_poisson
-WAPE diario: 24,24 por ciento
-R2 diario: 0,6592
-WAPE semanal: 15,01 por ciento
-R2 semanal: 0,8428
+RF_FENO_PODA_CLIMA_n200_d3_l5_s20_fsqrt_poisson
+WAPE diario de seleccion: 31,68 por ciento
+R2 diario de seleccion: 0,4579
+WAPE semanal de seleccion: 19,00 por ciento
+R2 semanal de seleccion: 0,8577
 ```
 
-Para la decision estrictamente semanal, el menor WAPE semanal fue de
-`ExtraTrees_FENO`, 14,83 por ciento, mientras que el RF anterior obtuvo 15,01
-por ciento y el mejor R2 semanal, 0,8428. El score compuesto da mas peso a las
-metricas semanales y selecciona el RF anterior. Estos resultados son
-exploratorios de validacion fija y aun no reemplazan el champion formal de
-Fase 8, porque la comparacion final no los incorporo al ranking con bootstrap
-y no existe un tercer periodo temporal independiente.
+El score compuesto da 70 por ciento de peso al alcance semanal y 30 por ciento
+al diario. El periodo de seleccion precede al holdout final; la especificacion completa se persiste en
+`selected_model_manifest.json`; rolling reconstruye la misma familia, features
+e hiperparametros. La comparacion formal ya la incorpora con bootstrap, aunque
+aun no existe un tercer periodo temporal independiente.
 
 ## 3. Bitacora por fase
 
@@ -98,8 +96,8 @@ Parquet y `qa_join_coverage.csv`.
 
 Se reconstruyo M3 con matrices de transicion por vigencia Abril y Julio. Se
 probaron valores de ingreso RC y se mantuvieron variantes baseline y calibrada.
-La validacion causal comun contiene 714 dias; el baseline obtiene WAPE de
-55,52 por ciento.
+La validacion causal de Fase 2 contiene 1.295 dias; el baseline obtiene WAPE de
+45,94 por ciento.
 
 Aciertos:
 
@@ -125,9 +123,9 @@ Resultados documentados:
 
 - 1.297 observaciones P32 normalizadas.
 - 514 intervalos validos bajo contrato.
-- M3-P32 regularizado: WAPE 34,53 por ciento, pero retrospectivo.
-- Semi-Markov completo: WAPE 37,96 por ciento, tambien retrospectivo.
-- El baseline comparable sigue en 55,52 por ciento.
+- M3-P32 regularizado: WAPE 39,61 por ciento, pero retrospectivo.
+- Semi-Markov RC+SS: WAPE 41,97 por ciento, tambien retrospectivo.
+- El baseline comparable obtiene 45,94 por ciento.
 
 Aciertos:
 
@@ -144,7 +142,7 @@ Se construyeron features de CORTE y ALINEAMIENTO con lags de 42 a 84 dias,
 sumas, kernels de 8 a 12 semanas, dias desde la ultima operacion y acumulados.
 Las operaciones ESTIMADO quedaron fuera.
 
-Resultado: las variantes M3 con poda conservaron WAPE de 55,52 por ciento; los
+Resultado: las variantes M3 con poda conservaron WAPE de 45,94 por ciento; los
 coeficientes positivos empeoraron el ajuste. La poda quedo como challenger no
 promovido.
 
@@ -160,9 +158,9 @@ calcularon lluvia, ET0, VPD, GDD y una estimacion declarada de DLI PAR.
 
 Resultado exploratorio:
 
-- Baseline local: WAPE 49,04 por ciento.
-- Mejor challenger M3 clima: WAPE 48,84 por ciento con coeficiente 0,10.
-- La mejora fue solo de 0,16 puntos porcentuales y no se promovio.
+- Baseline local: WAPE 45,75 por ciento.
+- Mejor challenger M3 clima: WAPE 44,27 por ciento con coeficiente 0,10.
+- La mejora fue de 1,48 puntos porcentuales y no se promovio.
 
 Aciertos:
 
@@ -183,11 +181,11 @@ prediccion M3, escala de camas e historial causal de cortes.
 
 Resultados iniciales documentados:
 
-- RF pooled FENO: WAPE 27,64 por ciento.
-- RF H1-H7 FENO: WAPE 27,54 por ciento.
-- RF semanal FENO: WAPE 18,59 por ciento, en otra escala.
-- RF residual sobre M3: WAPE 66,95 por ciento; no promovido.
-- GLM NB: inestable por escala y colinealidad; no promovido.
+- RF pooled FENO: WAPE 31,74 por ciento.
+- RF H1-H7 FENO: WAPE 31,81 por ciento.
+- RF semanal FENO: WAPE 25,24 por ciento, en otra escala.
+- RF residual sobre M3: WAPE 42,55 por ciento; no promovido.
+- GLM NB FENO: WAPE 31,60 por ciento; control interpretable competitivo.
 
 Aciertos:
 
@@ -206,9 +204,9 @@ PyMC para evitar una dependencia innecesaria en esta primera iteracion.
 
 Resultados:
 
-- M3 Dirichlet-Multinomial: WAPE 54,21 por ciento; no promovido.
-- NB jerarquico: WAPE 35,61 por ciento; challenger exploratorio.
-- Cobertura del NB: 16,1 por ciento al 80 por ciento y 23,4 por ciento al 95
+- M3 Dirichlet-Multinomial: WAPE 46,73 por ciento; no promovido.
+- NB jerarquico: WAPE 35,79 por ciento; challenger exploratorio.
+- Cobertura del NB: 5,0 por ciento al 80 por ciento y 7,4 por ciento al 95
   por ciento; inferior a la nominal.
 
 Aciertos:
@@ -221,16 +219,16 @@ operativas y requieren calibracion.
 
 ### Fase 8 - Comparacion final
 
-Se unificaron resultados en una poblacion causal diaria de 714 observaciones.
-Se excluyeron P32 retrospectivo, clima con 476 observaciones y resultados
-semanales de 102 observaciones del ranking primario.
+Se compararon M3 y el modelo supervisado seleccionado sobre la interseccion del
+holdout rolling-origin causal de 441 observaciones diarias. Se excluyeron P32
+retrospectivo y resultados con poblacion, split o escala distintos.
 
 Resultado formal:
 
-- `RF_H1_H7_FENO`: champion provisional.
-- WAPE actual en `ranking_final.csv`: 27,92 por ciento.
-- R2 actual: 0,5985.
-- IC bootstrap 95 por ciento: 26,20 a 29,92 por ciento.
+- `RF_FENO_PODA_CLIMA_n200_d3_l5_s20_fsqrt_poisson`: champion provisional.
+- WAPE actual en `ranking_final.csv`: 30,57 por ciento.
+- R2 actual: 0,4601.
+- IC bootstrap por origen al 95 por ciento: 27,35 a 34,31 por ciento.
 - M3: baseline obligatorio.
 
 La decision es provisional porque el holdout disponible es el ultimo periodo y
@@ -245,9 +243,10 @@ usaron automaticamente 3 procesos y 1 hilo por modelo, dejando 1 CPU libre.
 Se evaluaron 576 combinaciones RF y dos challengers. Se generaron ganadores
 separados por cada metrica diaria y semanal, ademas de un `selection_score`
 compuesto con 70 por ciento de peso semanal y 30 por ciento diario. El mejor
-RF por score compuesto y R2 semanal fue
-`RF_FENO_CLIMA_n200_d10_l2_s10_f0.5_poisson`, con WAPE diario 24,24 por ciento,
-R2 diario 0,6592, WAPE semanal 15,01 por ciento y R2 semanal 0,8428.
+RF por score compuesto fue
+`RF_FENO_PODA_CLIMA_n200_d3_l5_s20_fsqrt_poisson`, con WAPE diario 31,68 por
+ciento, R2 diario 0,4579, WAPE semanal 19,00 por ciento y R2 semanal 0,8577 en
+el periodo temporal de seleccion.
 
 Problemas encontrados y corregidos:
 
@@ -260,6 +259,10 @@ Problemas encontrados y corregidos:
 - La interfaz Streamlit no mostraba el ganador de hiperparametros; ahora lo
   incluye en validacion fija con ficha de parametros, metricas y ranking
   semanal.
+- Rolling reutilizaba solo hiperparametros y forzaba features `FENO`; ahora
+  consume el grupo de features exacto declarado por el manifiesto.
+- El split fijo podia partir una fecha entre train y validacion; ahora conserva
+  fechas completas y excluye targets de entrenamiento posteriores al cutoff.
 
 ## 4. Artefactos clave
 
@@ -276,16 +279,15 @@ Problemas encontrados y corregidos:
 ## 5. Estado y siguientes pasos
 
 Estado actual: pipeline reproducible de investigacion, con baseline, modelos
-challenger, comparacion causal y dashboard. La seleccion semanal favorece el
-WAPE semanal para uso operativo, pero el mejor RF por score compuesto debe
-incorporarse a una nueva comparacion formal antes de llamarlo champion
-operacional.
+challenger, comparacion rolling causal y dashboard. El mejor RF por score
+compuesto ya esta incorporado a la comparacion formal como champion
+provisional, no operacional.
 
 Siguientes pasos recomendados:
 
 1. Ejecutar un tercer periodo temporal congelado.
 2. Validar el RF por finca, bloque y horizonte.
-3. Incorporar el mejor RF de hiperparametros al ranking de Fase 8 con bootstrap.
+3. Monitorear estabilidad y drift del RF seleccionado por finca y horizonte.
 4. Revisar cobertura y estabilidad de los intervalos bayesianos.
 5. Cerrar el contrato de codigos fenologicos pendientes.
 6. Validar el clima con cobertura multi-finca o mantenerlo como challenger.

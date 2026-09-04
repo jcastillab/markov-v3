@@ -11,6 +11,7 @@ import pandas as pd
 
 from canonical import load_config
 from evaluation.metrics import metrics
+from evaluation.split import temporal_masks
 from models.m3 import _period_for_date, fit_m3, load_traditional_intervals, simulate
 
 
@@ -60,15 +61,9 @@ def main() -> None:
     intervals = load_traditional_intervals(raw, cfg)
     intervals.to_parquet(datasets / "transition_intervals_tradicional.parquet", index=False)
     windows = pd.read_parquet(datasets / "forecast_windows.parquet")
-    grouped = (windows.groupby(["finca", "bloque", "fecha_origen"], as_index=False)
-               .agg(ventana_evaluable=("ventana_evaluable", "first")))
-    origins = grouped.sort_values("fecha_origen").reset_index(drop=True)
-    n_train = max(cfg["evaluation"]["min_train_windows"], int(len(origins) * 0.60))
-    train_origins = set(map(tuple, origins.iloc[:n_train][["finca", "bloque", "fecha_origen"]].itertuples(index=False, name=None)))
-    validation_origins = set(map(tuple, origins.iloc[n_train:][["finca", "bloque", "fecha_origen"]].itertuples(index=False, name=None)))
-    keys = list(zip(windows["finca"], windows["bloque"], windows["fecha_origen"]))
-    train_mask = windows["ventana_evaluable"] & pd.Series([k in train_origins for k in keys], index=windows.index)
-    val_mask = windows["ventana_evaluable"] & pd.Series([k in validation_origins for k in keys], index=windows.index)
+    train, valid = temporal_masks(windows, cfg, origin_values=windows["fecha_origen"])
+    train_mask = windows["ventana_evaluable"] & pd.Series(train, index=windows.index)
+    val_mask = windows["ventana_evaluable"] & pd.Series(valid, index=windows.index)
     grid = cfg["m3"]["ingress_grid"]
     train_scores = []
     for alpha in grid:
@@ -114,7 +109,11 @@ def main() -> None:
     (model_dir / "m3_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Intervalos M3 validos: {len(intervals):,}")
-    print(f"Origenes evaluables: {len(origins[origins.ventana_evaluable]):,}; TRAIN: {train_mask.sum() // 7:,}; VALIDATION: {val_mask.sum() // 7:,}")
+    keys = ["finca", "bloque", "fecha_origen"]
+    evaluable_origins = windows.loc[windows.ventana_evaluable, keys].drop_duplicates()
+    train_origins = windows.loc[train_mask, keys].drop_duplicates()
+    validation_origins = windows.loc[val_mask, keys].drop_duplicates()
+    print(f"Origenes evaluables: {len(evaluable_origins):,}; TRAIN: {len(train_origins):,}; VALIDATION: {len(validation_origins):,}")
     print(f"Alpha ganador inner validation: {alpha_best:.2f}")
     print(pd.DataFrame(metric_rows).to_string(index=False))
 

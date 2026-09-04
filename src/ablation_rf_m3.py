@@ -35,8 +35,9 @@ def main():
     x = frame[cols].replace([np.inf, -np.inf], np.nan).fillna(0)
     y = frame.target.to_numpy(float)
     rf_cfg = cfg["random_forest"]
+    model_n_jobs = int(rf_cfg.get("parallel", {}).get("model_n_jobs", 1))
     prediction_rows, metric_rows = [], []
-    for horizon in range(1, 8):
+    for horizon in range(1, int(cfg["forecast"]["horizon_days"]) + 1):
         train_h = train & frame.horizonte_dia.eq(horizon).to_numpy()
         valid_h = valid & frame.horizonte_dia.eq(horizon).to_numpy()
         model = RandomForestRegressor(
@@ -45,7 +46,7 @@ def main():
             min_samples_leaf=rf_cfg["min_samples_leaf_grid"][0],
             min_samples_split=rf_cfg["min_samples_split_grid"][0],
             max_features=rf_cfg["max_features"][0],
-            random_state=rf_cfg["random_state"], n_jobs=-1)
+            random_state=rf_cfg["random_state"], n_jobs=model_n_jobs)
         model.fit(x[train_h], y[train_h])
         pred = model.predict(x[valid_h])
         trace = frame.loc[valid_h, ["finca", "bloque", "fecha_origen", "fecha_objetivo",

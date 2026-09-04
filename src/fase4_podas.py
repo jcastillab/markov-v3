@@ -10,6 +10,7 @@ import pandas as pd
 
 from canonical import load_config, load_pruning
 from evaluation.metrics import metrics
+from evaluation.split import validation_start
 from models.m3 import _period_for_date, fit_m3, simulate
 from models.pruning import (adjust_matrix, build_pruning_features,
                             pruning_signal)
@@ -19,9 +20,9 @@ def _split_origins(windows: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.D
     origins = (windows.groupby(["finca", "bloque", "fecha_origen"], as_index=False)
                .agg(ventana_evaluable=("ventana_evaluable", "first"))
                .sort_values("fecha_origen"))
-    n_train = max(cfg["evaluation"]["min_train_windows"], int(len(origins) * 0.60))
-    train = origins.iloc[:n_train]
-    validation = origins.iloc[n_train:]
+    cutoff = validation_start(origins["fecha_origen"], cfg)
+    train = origins[pd.to_datetime(origins.fecha_origen).lt(cutoff)]
+    validation = origins[pd.to_datetime(origins.fecha_origen).ge(cutoff)]
     validation = validation[validation["ventana_evaluable"]].copy()
     return train, validation
 

@@ -11,6 +11,7 @@ import pandas as pd
 
 from canonical import load_config
 from evaluation.metrics import metrics
+from evaluation.split import temporal_masks
 from models.m3 import _period_for_date, fit_m3
 from models.p32 import build_p32_intervals, fit_p32_matrix, load_p32_observations
 from models.semimarkov import (SemiMarkov, competitive_hazards,
@@ -59,14 +60,8 @@ def main() -> None:
     qa.to_csv(evaluation / "qa_p32_transiciones.csv", index=False)
     windows = pd.read_parquet(datasets / "forecast_windows.parquet")
     traditional = pd.read_parquet(datasets / "transition_intervals_tradicional.parquet")
-    # El split se define sobre todos los origenes, igual que en Fase 2;
-    # despues se aplica la mascara de ventanas evaluables.
-    origins = (windows.groupby(["finca", "bloque", "fecha_origen"], as_index=False)
-               .agg(ventana_evaluable=("ventana_evaluable", "first")))
-    origins = origins.sort_values("fecha_origen")
-    n_train = max(cfg["evaluation"]["min_train_windows"], int(len(origins) * 0.60))
-    val_keys = set(map(tuple, origins.iloc[n_train:][["finca", "bloque", "fecha_origen"]].itertuples(index=False, name=None)))
-    mask = pd.Series([tuple(x) in val_keys for x in zip(windows.finca, windows.bloque, windows.fecha_origen)], index=windows.index) & windows.ventana_evaluable
+    _, valid = temporal_masks(windows, cfg, origin_values=windows["fecha_origen"])
+    mask = pd.Series(valid, index=windows.index) & windows.ventana_evaluable
     val_windows = windows[mask]
     alpha = float(cfg["m3"]["baseline_ingress"])
     results, metric_rows = [], []
@@ -86,7 +81,7 @@ def main() -> None:
             if semi_states is None:
                 model = matrix
             else:
-                hazards = competitive_hazards(intervals_valid, m3_prior, tau=1.0,
+                hazards = competitive_hazards(intervals_valid, m3_prior, tau=cfg["semimarkov"]["tau"],
                                                max_bin=len(cfg["semimarkov"]["age_bins"]) - 1)
                 # Keep P32 hazards only for the selected states; M3 hazards are represented
                 # by a matrix-backed Semi Markov approximation for other states.

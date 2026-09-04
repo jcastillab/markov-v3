@@ -8,26 +8,26 @@
   ventanas evaluables, igual que el baseline M3.
 - Historial de cortes, poda, clima y prediccion M3 usan informacion disponible
   hasta `t0`.
-- La validacion contiene 714 dias.
+- La validacion contiene 1.295 dias.
 
 ## Resultados
 
 | Experimento | WAPE | Estado |
 |---|---:|---|
-| RF diario pooled FENO | 27,64% | Challenger exploratorio |
-| RF diario H1-H7 FENO | 27,54% | Challenger exploratorio |
-| RF semanal FENO | 18,59% | Challenger exploratorio |
-| RF residual sobre M3 | 66,95% | No promovido |
-| GLM NB FENO | 343,02% | No promovido |
-| GLM NB FENO_PODA_CLIMA | 71,27% | No promovido |
+| RF diario pooled FENO | 31,74% | Challenger exploratorio |
+| RF diario H1-H7 FENO | 31,81% | Challenger exploratorio |
+| RF semanal FENO | 25,24% | Otra escala |
+| RF residual sobre M3 | 42,55% | No promovido |
+| GLM NB FENO | 31,60% | Control interpretable |
+| GLM NB FENO_PODA_CLIMA | 92,68% | No promovido |
 
 El RF mejora ampliamente a M3 en esta validacion, pero requiere validacion
 interna, importancia por permutacion y control de estabilidad por finca,
 bloque y periodo antes de promoción. El resultado semanal no debe compararse
 directamente con WAPE diario sin reportar ambas escalas.
 
-El GLM NB se incluye como control de conteo, pero sus predicciones presentan
-inestabilidad con la escala y colinealidad actuales. No se usa como champion.
+El GLM NB FENO es competitivo en esta validacion fija, pero las variantes con
+poda o clima presentan inestabilidad. No se usa como champion.
 El residual sobre M3 tampoco mejora, por lo que M3 permanece como referencia
 mecanistica obligatoria.
 

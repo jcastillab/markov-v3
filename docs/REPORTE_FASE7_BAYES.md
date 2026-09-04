@@ -11,12 +11,13 @@
 
 ## Validacion
 
-La poblacion es la validacion temporal comun de Fases 2-6: 714 dias.
+La poblacion de comparacion de esta fase contiene 1.295 dias.
 
 | Modelo | WAPE | Cobertura 80% | Cobertura 95% | Estado |
 |---|---:|---:|---:|---|
-| M3 Dirichlet-Multinomial | 54,21% | 36,6% | n/d | No promovido |
-| NB jerarquico | 35,61% | 16,1% | 23,4% | Challenger exploratorio |
+| M3 Dirichlet-Multinomial | 46,73% | 26,5% | 33,4% | No promovido |
+| NB jerarquico | 35,79% | 5,0% | 7,4% | Challenger exploratorio |
+| NB jerarquico con covariables | 47,56% | 34,7% | 50,3% | No promovido |
 
 El NB jerarquico mejora el WAPE, pero sus intervalos tienen cobertura inferior
 a la nominal. La parametrizacion de incertidumbre requiere calibracion antes

@@ -11,6 +11,7 @@ import pandas as pd
 
 from canonical import load_config
 from evaluation.metrics import metrics
+from evaluation.split import validation_start
 from models.bayes import CovariateHierarchicalNB, DirichletM3, HierarchicalNB
 from models.m3 import _period_for_date, fit_m3, simulate
 
@@ -25,15 +26,12 @@ def main():
     frame["semana_del_año"] = pd.to_datetime(frame["fecha_origen"]).dt.isocalendar().week.astype(float)
     frame["periodo_ABRIL_JULIO"] = (pd.to_datetime(frame["fecha_origen"]).dt.month >= 7).astype(float)
     origin_dates = sorted(pd.to_datetime(windows["fecha_origen"]).unique())
-    n = max(cfg["evaluation"]["min_train_windows"], int(len(origin_dates) * .60))
-    if n >= len(origin_dates):
-        raise ValueError("No queda una fecha de validacion despues del minimo de entrenamiento")
-    validation_start = pd.Timestamp(origin_dates[n])
+    cutoff = validation_start(origin_dates, cfg)
     origin = pd.to_datetime(frame["fecha_origen"])
     objective = pd.to_datetime(frame["fecha_objetivo"])
-    valid = frame[origin >= validation_start].copy()
+    valid = frame[origin >= cutoff].copy()
     # Un objetivo posterior al cutoff no es observable al entrenar el modelo.
-    train = frame[(origin < validation_start) & (objective < validation_start)].copy()
+    train = frame[(origin < cutoff) & (objective < cutoff)].copy()
     # NB jerarquico: efectos finca-bloque-horizonte con pooling hacia la media global.
     nb = HierarchicalNB(cfg["bayes"]["hierarchical_shrinkage"]).fit(train)
     pred_nb = nb.predict(valid)

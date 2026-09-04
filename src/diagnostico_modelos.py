@@ -12,17 +12,12 @@ from sklearn.ensemble import RandomForestRegressor
 
 from canonical import load_config
 from evaluation.metrics import metrics
+from evaluation.split import temporal_masks
 from models.supervised import build_supervised_dataset, feature_groups
 
 
 def split_frame(frame: pd.DataFrame, windows: pd.DataFrame, cfg: dict):
-    origins = (windows.groupby(["finca", "bloque", "fecha_origen"], as_index=False)
-               .size().drop(columns="size").sort_values("fecha_origen"))
-    n_train = max(cfg["evaluation"]["min_train_windows"], int(len(origins) * .60))
-    keys = set(map(tuple, origins.iloc[:n_train].itertuples(index=False, name=None)))
-    is_train = np.array([tuple(x) in keys for x in
-                         zip(frame.finca, frame.bloque, frame.fecha_origen)])
-    return is_train, ~is_train
+    return temporal_masks(frame, cfg, origin_values=windows["fecha_origen"])
 
 
 def _metric_row(y, pred, scope, model, horizon):
@@ -36,9 +31,10 @@ def fit_horizon_diagnostics(frame, windows, cfg, cols):
     x = frame[cols].replace([np.inf, -np.inf], np.nan).fillna(0)
     y = frame.target.to_numpy(float)
     rf_cfg = cfg["random_forest"]
+    model_n_jobs = int(rf_cfg.get("parallel", {}).get("model_n_jobs", 1))
     rows = []
     importance_rows = []
-    for horizon in range(1, 8):
+    for horizon in range(1, int(cfg["forecast"]["horizon_days"]) + 1):
         train_h = train & frame.horizonte_dia.eq(horizon).to_numpy()
         valid_h = valid & frame.horizonte_dia.eq(horizon).to_numpy()
         model = RandomForestRegressor(
@@ -47,7 +43,7 @@ def fit_horizon_diagnostics(frame, windows, cfg, cols):
             min_samples_leaf=rf_cfg["min_samples_leaf_grid"][0],
             min_samples_split=rf_cfg["min_samples_split_grid"][0],
             max_features=rf_cfg["max_features"][0],
-            random_state=rf_cfg["random_state"], n_jobs=-1)
+            random_state=rf_cfg["random_state"], n_jobs=model_n_jobs)
         model.fit(x[train_h], y[train_h])
         importance_rows.extend({"horizonte": horizon, "variable": col,
                                 "importance": float(value)}

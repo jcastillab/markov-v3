@@ -12,6 +12,7 @@ from sklearn.preprocessing import OneHotEncoder
 
 from canonical import load_config
 from evaluation.metrics import metrics
+from evaluation.split import temporal_masks
 from models.m3 import load_traditional_intervals
 from models.supervised import (NegativeBinomialGLM, build_supervised_dataset,
                                feature_groups)
@@ -28,13 +29,9 @@ def main():
     climate = pd.read_parquet(datasets / "clima_features.parquet")
     frame = build_supervised_dataset(windows, fact, intervals, cfg, pruning, climate)
     frame.to_parquet(datasets / "dataset_supervisado_diario.parquet", index=False)
-    origins = (windows.groupby(["finca", "bloque", "fecha_origen"], as_index=False)
-               .size().drop(columns="size").sort_values("fecha_origen"))
-    n_train = max(cfg["evaluation"]["min_train_windows"], int(len(origins) * .60))
-    train_keys = set(map(tuple, origins.iloc[:n_train].itertuples(index=False, name=None)))
-    key = list(zip(frame.finca, frame.bloque, frame.fecha_origen))
-    train = np.array([x in train_keys for x in key]); valid = ~train
+    train, valid = temporal_masks(frame, cfg, origin_values=windows["fecha_origen"])
     groups = feature_groups(frame)
+    model_n_jobs = int(cfg["random_forest"].get("parallel", {}).get("model_n_jobs", 1))
     numeric = frame.select_dtypes(include=[np.number]).columns
     x_base = frame[numeric].replace([np.inf, -np.inf], np.nan).fillna(0)
     rows = []
@@ -53,14 +50,14 @@ def main():
         rf_cfg = cfg["random_forest"]
         rf = RandomForestRegressor(n_estimators=rf_cfg["n_estimators"], max_depth=rf_cfg["max_depth_grid"][0],
             min_samples_leaf=rf_cfg["min_samples_leaf_grid"][0], min_samples_split=rf_cfg["min_samples_split_grid"][0],
-            max_features=rf_cfg["max_features"][0], random_state=rf_cfg["random_state"], n_jobs=-1)
+            max_features=rf_cfg["max_features"][0], random_state=rf_cfg["random_state"], n_jobs=model_n_jobs)
         rf.fit(x[train], frame.target[train]); pred = rf.predict(x[valid])
         trace.assign(pred=pred).to_csv(
             evaluation / f"predictions_{name.lower()}.csv", index=False)
         rows.append({"experiment_id": f"RF_DIARIO_POOLED_{name}", "split": "VALIDATION", "causal": True,
                      "n": int(valid.sum()), **metrics(frame.target[valid], pd.Series(pred))})
         importance = permutation_importance(rf, x[valid], frame.target[valid], n_repeats=5,
-                                            random_state=rf_cfg["random_state"], n_jobs=-1)
+                                            random_state=rf_cfg["random_state"], n_jobs=model_n_jobs)
         pd.DataFrame({"experiment_id": f"RF_DIARIO_POOLED_{name}", "feature": cols,
                       "importance_mean": importance.importances_mean}).to_csv(
                           models / f"importance_{name.lower()}.csv", index=False)
@@ -71,7 +68,7 @@ def main():
     residual_rf = RandomForestRegressor(n_estimators=rf_cfg["n_estimators"],
         max_depth=rf_cfg["max_depth_grid"][0], min_samples_leaf=rf_cfg["min_samples_leaf_grid"][0],
         min_samples_split=rf_cfg["min_samples_split_grid"][0], max_features=rf_cfg["max_features"][0],
-        random_state=rf_cfg["random_state"], n_jobs=-1)
+        random_state=rf_cfg["random_state"], n_jobs=model_n_jobs)
     residual = frame.target.to_numpy() - frame.M3_pred_bloque.to_numpy()
     residual_rf.fit(x[train], residual[train])
     pred = np.maximum(0, frame.M3_pred_bloque.to_numpy()[valid] + residual_rf.predict(x[valid]))
@@ -81,13 +78,13 @@ def main():
                  "n": int(valid.sum()), **metrics(frame.target[valid], pd.Series(pred))})
     # Ablacion de horizonte: siete RF independientes y suma semanal equivalente.
     h_pred = []
-    for horizon in range(1, 8):
+    for horizon in range(1, int(cfg["forecast"]["horizon_days"]) + 1):
         mask_train = train & frame.horizonte_dia.eq(horizon).to_numpy()
         mask_valid = valid & frame.horizonte_dia.eq(horizon).to_numpy()
         model = RandomForestRegressor(n_estimators=rf_cfg["n_estimators"],
             max_depth=rf_cfg["max_depth_grid"][0], min_samples_leaf=rf_cfg["min_samples_leaf_grid"][0],
             min_samples_split=rf_cfg["min_samples_split_grid"][0], max_features=rf_cfg["max_features"][0],
-            random_state=rf_cfg["random_state"], n_jobs=-1)
+            random_state=rf_cfg["random_state"], n_jobs=model_n_jobs)
         model.fit(x[mask_train], frame.target[mask_train])
         h_pred.append(pd.DataFrame({"finca": frame.loc[mask_valid, "finca"].to_numpy(),
             "bloque": frame.loc[mask_valid, "bloque"].to_numpy(),

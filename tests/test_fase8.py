@@ -8,6 +8,6 @@ def test_final_ranking_excludes_noncausal_models():
     if not path.exists():
         return
     ranking = pd.read_csv(path)
-    assert ranking["n"].eq(714).all()
-    assert ranking["experiment_id"].str.startswith("E02").sum() == 0
+    assert ranking["n"].nunique() == 1
+    assert ranking["split"].eq("ROLLING_ORIGIN_COMMON").all()
     assert ranking.iloc[0]["decision"] == "champion_provisional"
