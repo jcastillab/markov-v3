@@ -121,7 +121,8 @@ def perfilar_hoja(xlsx: Path, sheet: str, df: pd.DataFrame) -> tuple[dict, list[
 
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
-    xlsxs = sorted(RAW.glob("*.xlsx"))
+    # Excel creates lock files next to workbooks while they are open.
+    xlsxs = sorted(p for p in RAW.glob("*.xlsx") if not p.name.startswith("~$"))
     if not xlsxs:
         print("No hay xlsx en data/raw", file=sys.stderr)
         return 1
