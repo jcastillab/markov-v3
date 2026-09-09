@@ -59,6 +59,8 @@ PREDICTION_FILES_ROLLING = {
     "E00_M3_BASE_ROLLING": "outputs/evaluation/predictions_e00_m3_base_rolling.csv",
     "E01_M3_INGRESO_CALIBRADO_ROLLING": "outputs/evaluation/predictions_e01_m3_ingreso_calibrado_rolling.csv",
     "MODELO_SELECCIONADO_ROLLING": "outputs/evaluation/predictions_modelo_seleccionado_rolling.csv",
+    "MEJOR_EXTRA_TREES_ROLLING": "outputs/evaluation/predictions_mejor_extra_trees_rolling.csv",
+    "MEJOR_HIST_GRADIENT_BOOSTING_ROLLING": "outputs/evaluation/predictions_mejor_hist_gradient_boosting_rolling.csv",
     "RF_OPT_FENO_ROLLING": "outputs/evaluation/predictions_rf_opt_feno_rolling.csv",
     "RF_OPT_FENO_PODA_ROLLING": "outputs/evaluation/predictions_rf_opt_feno_poda_rolling.csv",
     "RF_OPT_FENO_CLIMA_ROLLING": "outputs/evaluation/predictions_rf_opt_feno_clima_rolling.csv",

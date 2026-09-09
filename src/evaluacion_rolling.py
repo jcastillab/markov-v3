@@ -242,7 +242,18 @@ def _rf_specs(evaluation, cfg):
     specs = {}
     for _, row in best.iterrows():
         specs[f"RF_OPT_{row.features}_ROLLING"] = {"model": row.model, "family": "RF", "features": row.features,
-                                                      "hyperparameters": json.loads(row.hyperparameters)}
+                                                       "hyperparameters": json.loads(row.hyperparameters)}
+    # Los challengers se seleccionan en la misma busqueda temporal previa y se
+    # vuelven a entrenar causalmente en cada origen Rolling.
+    hyperparameters = pd.read_csv(evaluation / "metrics_hyperparametros.csv")
+    for family, label in (("EXTRA_TREES", "MEJOR_EXTRA_TREES_ROLLING"),
+                          ("HIST_GRADIENT_BOOSTING", "MEJOR_HIST_GRADIENT_BOOSTING_ROLLING")):
+        candidates = hyperparameters[hyperparameters.family.eq(family)].sort_values("selection_score")
+        if candidates.empty:
+            continue
+        row = candidates.iloc[0]
+        specs[label] = {"model": row.model, "family": family, "features": row.features,
+                        "hyperparameters": json.loads(row.hyperparameters)}
     specs["MODELO_SELECCIONADO_ROLLING"] = read_selection(evaluation / "selected_model_manifest.json")
     return specs
 

@@ -45,6 +45,27 @@ def _pct(value, signed=False):
     return f"{value:+.2%}" if signed else f"{value:.2%}"
 
 
+def model_family(model: str) -> str:
+    """Agrupa nombres de experimentos para comparar el mejor de cada familia."""
+    if model.startswith("E00") or model.startswith("E01"):
+        return "M3"
+    if model.startswith("MODELO_SELECCIONADO"):
+        return "Seleccionado Rolling"
+    if model.startswith("RF_OPT") or model.startswith("RF_RESIDUAL") or model.startswith("RF_H1"):
+        return "Random Forest"
+    if model.startswith("MEJOR_EXTRA"):
+        return "Extra Trees"
+    if model.startswith("MEJOR_HIST"):
+        return "HistGradientBoosting"
+    if model.startswith("GLM_NB"):
+        return "GLM Negative Binomial"
+    if model.startswith("NB_JERARQUICO"):
+        return "NB jerarquico"
+    if model.startswith("M3_DIRICHLET"):
+        return "M3 Dirichlet"
+    return "Otros"
+
+
 def _percent_view(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     """Prepara porcentajes para NumberColumn, que usa formato printf."""
     result = frame.copy()
@@ -298,6 +319,9 @@ score = model_scores(model_weekly).iloc[0]
 weekly_wape = float(score["wape"])
 sesgo = float(score["bias_pct"])
 summary = weekly_summary(filtered_weekly)
+summary["familia"] = summary["modelo"].map(model_family)
+best_by_family = (summary.sort_values(["familia", "wape_semanal"])
+                  .drop_duplicates("familia"))
 operational = operational_weekly_selected(daily, by_block=block != "Todos")
 operational = apply_filters(operational, farm, block, week)
 c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -319,6 +343,24 @@ with st.expander("Definiciones y lectura metodologica"):
     - **R2:** variabilidad explicada frente a la media de los reales; puede ser negativo.
     - Las ventanas son completas H1-H7 y se mantienen separadas por finca, bloque, origen y semana.
     """)
+
+st.subheader("Mejor modelo por familia")
+st.caption("Comparacion sobre la misma poblacion del modo seleccionado; menor WAPE semanal es mejor.")
+family_columns = [column for column in ["familia", "modelo", "wape_semanal", "sesgo_pct",
+                                         "mae_semanal", "rmse_semanal", "r2_semanal", "ventanas"]
+                  if column in best_by_family]
+st.dataframe(_percent_view(best_by_family[family_columns], ["wape_semanal", "sesgo_pct"]),
+             width="stretch", hide_index=True,
+             column_config={
+                 "wape_semanal": st.column_config.NumberColumn("WAPE semanal", format="%.1f%%"),
+                 "sesgo_pct": st.column_config.NumberColumn("Sesgo", format="%+.1f%%"),
+             })
+if evaluation_mode == "Rolling origin" and manifests.get("selected"):
+    with st.expander("Hiperparametros del modelo seleccionado Rolling"):
+        selected_manifest = manifests["selected"]
+        st.caption("Se seleccionaron previamente y se reutilizan en cada origen Rolling; no se reoptimizan dentro de cada ventana.")
+        st.json({key: selected_manifest[key] for key in ("model", "family", "features", "selected_by", "hyperparameters")
+                 if key in selected_manifest})
 
 tab_summary, tab_input, tab_rf, tab_bayes, tab_overfit, tab_features, tab_corr, tab_trace = st.tabs([
     "Resumen semanal", "Nueva entrada", "RF optimizados", "Intervalos Bayes", "Sobreajuste", "Variables y rezagos", "Correlacion y VIF", "Trazabilidad"
