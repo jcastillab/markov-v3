@@ -196,7 +196,7 @@ evaluation:
   min_train_windows: 4        # minimo de semanas origen en TRAIN antes de predecir
   train_fraction: 0.60
   selection_fraction: 0.20
-  model_selection_target: composite
+  model_selection_target: daily_wape
   champion_split: ROLLING_ORIGIN_COMMON
   selection_scope_weights:
     weekly: 0.70

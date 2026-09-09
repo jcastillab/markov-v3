@@ -10,12 +10,20 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from canonical import load_config
-from dashboard_validation import (complete_windows, load_validation_predictions, model_scores,
-                                  operational_summary, operational_weekly, operational_weekly_selected,
-                                  weekly_status)
-from evaluacion_entrada import evaluate_input
-from reporte_excel import PREDICTION_FILES, PREDICTION_FILES_ROLLING
+try:
+    from canonical import load_config
+    from dashboard_validation import (complete_windows, load_validation_predictions, model_scores,
+                                      operational_summary, operational_weekly, operational_weekly_selected,
+                                      weekly_status)
+    from evaluacion_entrada import evaluate_input
+    from reporte_excel import PREDICTION_FILES, PREDICTION_FILES_ROLLING
+except ModuleNotFoundError:
+    from src.canonical import load_config
+    from src.dashboard_validation import (complete_windows, load_validation_predictions, model_scores,
+                                          operational_summary, operational_weekly, operational_weekly_selected,
+                                          weekly_status)
+    from src.evaluacion_entrada import evaluate_input
+    from src.reporte_excel import PREDICTION_FILES, PREDICTION_FILES_ROLLING
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,13 +133,82 @@ def load_input_evaluation() -> tuple[pd.DataFrame, pd.DataFrame]:
     return pd.read_csv(daily_path, parse_dates=["fecha_origen", "fecha_objetivo"]), pd.read_csv(weekly_path, parse_dates=["fecha_origen"])
 
 
-def apply_filters(frame: pd.DataFrame, farm: str, block: str) -> pd.DataFrame:
+def apply_filters(frame: pd.DataFrame, farm: str, block: str, week: str = "Todas") -> pd.DataFrame:
     result = frame
     if farm != "Todas":
         result = result[result["finca"].eq(farm)]
     if block != "Todos":
         result = result[result["bloque"].astype(str).eq(block)]
+    if week != "Todas" and "semana_proyeccion" in result:
+        result = result[result["semana_proyeccion"].astype(str).eq(str(week))]
     return result
+
+
+def _status_style(value):
+    return {
+        "ACIERTO": "background-color: #c6efce",
+        "CERCA": "background-color: #ffeb9c",
+        "NO ACIERTO": "background-color: #ffc7ce",
+        "PARCIAL": "background-color: #d9eaf7",
+        "NO EVALUABLE": "background-color: #e7e7e7",
+    }.get(value, "")
+
+
+def external_operational_weekly(frame: pd.DataFrame, farm: str, block: str, week: str) -> pd.DataFrame:
+    """Selecciona un origen por bloque-semana antes de agregar la finca."""
+    result = apply_filters(frame, farm, block, week)
+    if result.empty:
+        return result
+    result = result.copy()
+    result["inicio_semana"] = pd.to_datetime(result["semana_proyeccion"].astype(str) + "1", format="%G%V%u", errors="coerce")
+    result["distancia_inicio_dias"] = (
+        pd.to_datetime(result["fecha_origen"]).dt.normalize() - result["inicio_semana"]
+    ).abs().dt.days
+    keys = ["modelo", "finca", "bloque", "semana_proyeccion"]
+    selected = (result.sort_values(keys + ["distancia_inicio_dias", "fecha_origen"])
+                .drop_duplicates(keys, keep="first"))
+    return selected.drop(columns=["inicio_semana", "distancia_inicio_dias"], errors="ignore")
+
+
+def external_farm_weekly(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    keys = ["modelo", "finca", "semana_proyeccion"]
+    result = (frame.groupby(keys, as_index=False, dropna=False)
+              .agg(real=("real", "sum"), proyectado=("proyectado", "sum"),
+                   dias_reales=("dias_reales", "sum"), dias=("dias", "sum"),
+                   bloques=("bloque", "nunique")))
+    result["diferencia"] = result.proyectado - result.real
+    result["error_abs"] = result.diferencia.abs()
+    result["razon_proyectado_real"] = np.where(result.real.ne(0), result.proyectado / result.real, np.nan)
+    result["desviacion_pct"] = result.razon_proyectado_real - 1
+    result["indicador"] = result.razon_proyectado_real.map(weekly_status)
+    result["estado_evaluacion"] = np.select(
+        [result.dias_reales.eq(result.dias), result.dias_reales.gt(0)],
+        ["COMPLETA", "PARCIAL"], default="NO EVALUABLE")
+    result.loc[result.estado_evaluacion.eq("NO EVALUABLE"), ["real", "proyectado", "diferencia", "error_abs", "razon_proyectado_real", "desviacion_pct", "indicador"]] = np.nan
+    return result
+
+
+def external_summary(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    evaluated = frame[frame.estado_evaluacion.ne("NO EVALUABLE")].copy()
+    if evaluated.empty:
+        return pd.DataFrame()
+    evaluated["ok"] = evaluated.indicador.eq("ACIERTO")
+    evaluated["cerca_ok"] = evaluated.indicador.isin(["ACIERTO", "CERCA"])
+    summary = (evaluated.groupby("modelo", as_index=False)
+               .agg(semanas_evaluables=("indicador", "size"),
+                    semanas_completas=("estado_evaluacion", lambda x: int(x.eq("COMPLETA").sum())),
+                    semanas_parciales=("estado_evaluacion", lambda x: int(x.eq("PARCIAL").sum())),
+                    aciertos=("ok", "sum"), cerca=("cerca_ok", "sum"),
+                    no_aciertos=("indicador", lambda x: int(x.eq("NO ACIERTO").sum())),
+                    real=("real", "sum"), error_abs=("error_abs", "sum")))
+    summary["pct_acierto"] = summary.aciertos / summary.semanas_evaluables
+    summary["pct_acierto_o_cerca"] = summary.cerca / summary.semanas_evaluables
+    summary["wape"] = summary.error_abs / summary.real.abs().replace(0, np.nan)
+    return summary.sort_values(["pct_acierto", "wape"], ascending=[False, True])
 
 
 def weekly_summary(frame: pd.DataFrame) -> pd.DataFrame:
@@ -208,8 +285,10 @@ farm = st.sidebar.selectbox("Finca", ["Todas"] + farms)
 available_blocks = weekly if farm == "Todas" else weekly[weekly["finca"].eq(farm)]
 blocks = sorted(available_blocks["bloque"].dropna().astype(str).unique())
 block = st.sidebar.selectbox("Bloque", ["Todos"] + blocks, disabled=not blocks)
+weeks = sorted(weekly["semana_proyeccion"].dropna().astype(str).unique())
+week = st.sidebar.selectbox("Semana objetivo", ["Todas"] + weeks)
 
-filtered_weekly = apply_filters(weekly, farm, block)
+filtered_weekly = apply_filters(weekly, farm, block, week)
 model_weekly = filtered_weekly[filtered_weekly["modelo"].eq(model)].copy()
 if model_weekly.empty:
     st.warning("No hay ventanas para los filtros seleccionados.")
@@ -220,7 +299,7 @@ weekly_wape = float(score["wape"])
 sesgo = float(score["bias_pct"])
 summary = weekly_summary(filtered_weekly)
 operational = operational_weekly_selected(daily, by_block=block != "Todos")
-operational = apply_filters(operational, farm, block)
+operational = apply_filters(operational, farm, block, week)
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("WAPE semanal", _pct(weekly_wape))
 c2.metric("Sesgo porcentual", _pct(sesgo, signed=True), help="Positivo sobreestima; negativo subestima; 0% es exacto.")
@@ -261,36 +340,49 @@ with tab_input:
         input_model = st.selectbox("Modelo de entrada", input_models, key="input_model")
         input_farms = sorted(input_weekly.finca.unique())
         input_farm = st.selectbox("Finca de entrada", ["Todas"] + input_farms, key="input_farm")
+        input_scope = input_weekly if input_farm == "Todas" else input_weekly[input_weekly.finca.eq(input_farm)]
+        input_blocks = sorted(input_scope.bloque.dropna().astype(str).unique())
+        input_block = st.selectbox("Bloque de entrada", ["Todos"] + input_blocks, key="input_block")
+        input_weeks = sorted(input_weekly.semana_proyeccion.dropna().astype(str).unique())
+        input_week = st.selectbox("Semana de entrada", ["Todas"] + input_weeks, key="input_week")
         granularity = st.radio("Granularidad", ["Finca + semana", "Finca + bloque + semana"], horizontal=True)
         data = input_weekly[input_weekly.modelo.eq(input_model)].copy()
-        if input_farm != "Todas":
-            data = data[data.finca.eq(input_farm)]
+        data = external_operational_weekly(data, input_farm, input_block, input_week)
         if granularity == "Finca + semana":
-            data = (data.groupby(["modelo", "finca", "semana_proyeccion"], as_index=False)
-                    .agg(real=("real", "sum"), proyectado=("proyectado", "sum"), dias=("dias", "sum")))
-            data["diferencia"] = data.proyectado - data.real
-            data["error_abs"] = data.diferencia.abs()
-            data["razon_proyectado_real"] = np.where(data.real.ne(0), data.proyectado / data.real, np.nan)
-            data["desviacion_pct"] = data.razon_proyectado_real - 1
-            data["indicador"] = data.razon_proyectado_real.map(weekly_status)
+            data = external_farm_weekly(data)
         else:
             data = data.sort_values(["finca", "bloque", "semana_proyeccion"])
-        st.caption("La semana corresponde a la ventana objetivo lunes-domingo posterior al ultimo conteo semanal.")
-        display = data[[c for c in ["modelo", "finca", "bloque", "semana_proyeccion", "real", "proyectado",
-                                    "diferencia", "error_abs", "razon_proyectado_real", "desviacion_pct", "indicador"] if c in data]]
+        st.caption("La evaluacion externa usa el historico original para entrenar y este archivo solo para scoring. Las semanas parciales comparan unicamente dias reales observados.")
+        display = data[[c for c in ["modelo", "finca", "bloque", "semana_proyeccion", "estado_evaluacion",
+                                    "bloques", "dias_reales", "dias", "real", "proyectado", "diferencia",
+                                    "error_abs", "razon_proyectado_real", "desviacion_pct", "indicador"] if c in data]]
         display_view = _percent_view(display, ["razon_proyectado_real", "desviacion_pct"])
-        styled = display_view.style.map(
-            lambda value: "background-color: #c6efce" if value == "ACIERTO" else
-            ("background-color: #ffeb9c" if value == "CERCA" else
-             ("background-color: #ffc7ce" if value == "NO ACIERTO" else "")), subset=["indicador"])
+        status_columns = [column for column in ["indicador", "estado_evaluacion"] if column in display_view]
+        styled = display_view.style.map(_status_style, subset=status_columns)
         st.dataframe(styled, width="stretch", hide_index=True,
                      column_config={"real": st.column_config.NumberColumn("Real", format="%.0f"),
                                     "proyectado": st.column_config.NumberColumn("Proyectado", format="%.0f"),
                                     "razon_proyectado_real": st.column_config.NumberColumn("Proyectado / real", format="%.1f%%"),
-                                    "desviacion_pct": st.column_config.NumberColumn("Desviacion", format="%+.1f%%")})
+                                     "desviacion_pct": st.column_config.NumberColumn("Desviacion", format="%+.1f%%")})
+        ext_summary = external_summary(external_farm_weekly(external_operational_weekly(
+            input_weekly[input_weekly.modelo.eq(input_model)], input_farm, input_block, input_week)))
+        if not ext_summary.empty:
+            st.subheader("Resumen de aciertos de la evaluacion externa")
+            st.dataframe(_percent_view(ext_summary, ["pct_acierto", "pct_acierto_o_cerca", "wape"]),
+                         width="stretch", hide_index=True,
+                         column_config={"pct_acierto": st.column_config.NumberColumn("% acierto", format="%.1f%%"),
+                                        "pct_acierto_o_cerca": st.column_config.NumberColumn("% acierto o cerca", format="%.1f%%"),
+                                        "wape": st.column_config.NumberColumn("WAPE", format="%.1f%%")})
         st.download_button("Descargar evaluacion semanal CSV", display.to_csv(index=False),
                            "evaluacion_entrada_semanal.csv", "text/csv")
-        st.download_button("Descargar detalle diario CSV", input_daily[input_daily.modelo.eq(input_model)].to_csv(index=False),
+        filtered_daily = input_daily[input_daily.modelo.eq(input_model)].copy()
+        if input_farm != "Todas":
+            filtered_daily = filtered_daily[filtered_daily.finca.eq(input_farm)]
+        if input_block != "Todos":
+            filtered_daily = filtered_daily[filtered_daily.bloque.astype(str).eq(input_block)]
+        if input_week != "Todas":
+            filtered_daily = filtered_daily[filtered_daily.semana_proyeccion.astype(str).eq(input_week)]
+        st.download_button("Descargar detalle diario CSV", filtered_daily.to_csv(index=False),
                            "evaluacion_entrada_diaria.csv", "text/csv")
         xlsx_path = ROOT / "outputs/evaluation/evaluacion_entrada.xlsx"
         if xlsx_path.exists():

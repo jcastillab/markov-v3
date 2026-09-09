@@ -218,7 +218,18 @@ def main():
     result = add_selection_scores(pd.DataFrame(rows), cfg)
     result = result.sort_values("selection_score")
     result.to_csv(evaluation / "metrics_hyperparametros.csv", index=False)
-    best_by_features = result[result.family.eq("RF")].sort_values("weekly_wape").groupby("features", as_index=False).first()
+    selection_target = cfg["evaluation"].get("model_selection_target", "daily_wape")
+    target_column = {
+        "daily_wape": "daily_wape",
+        "weekly_wape": "weekly_wape",
+        "daily_r2": "daily_r2",
+        "weekly_r2": "weekly_r2",
+    }.get(selection_target, "daily_wape")
+    target_order = result[target_column] if not target_column.endswith("r2") else -result[target_column]
+    rf_result = result[result.family.eq("RF")].assign(_target_order=target_order)
+    best_by_features = (rf_result.sort_values("_target_order")
+                        .groupby("features", as_index=False).first()
+                        .drop(columns="_target_order"))
     best_by_features.to_csv(evaluation / "rf_mejores_por_grupo.csv", index=False)
     (evaluation / "rf_hardware_plan.json").write_text(json.dumps({
         **plan, "cpu_logical": os.cpu_count() or 1, "n_experiments": len(tasks),

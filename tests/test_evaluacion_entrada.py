@@ -26,6 +26,25 @@ def test_weekly_entry_sums_days_before_calculating_ratio():
     assert row.proyectado == 70
     assert row.razon_proyectado_real == 1
     assert row.indicador == "ACIERTO"
+    assert row.estado_evaluacion == "COMPLETA"
+
+
+def test_weekly_entry_partial_compares_only_observed_days():
+    daily = pd.DataFrame({
+        "modelo": ["M"] * 7, "finca": ["A"] * 7, "bloque": ["1"] * 7,
+        "fecha_origen": pd.Timestamp("2026-05-01"),
+        "fecha_objetivo": pd.date_range("2026-05-04", periods=7),
+        "semana_proyeccion": 202619, "horizonte_dia": range(1, 8),
+        "real": [10, 10, 10, 10, 10, None, None],
+        "proyectado": [11, 9, 10, 10, 10, 100, 100],
+    })
+    weekly = _weekly(daily)
+    row = weekly.iloc[0]
+    assert row.estado_evaluacion == "PARCIAL"
+    assert row.dias_reales == 5
+    assert row.real == 50
+    assert row.proyectado == 50
+    assert row.indicador == "ACIERTO"
 
 
 def test_entry_window_uses_last_count_and_next_monday_to_sunday():

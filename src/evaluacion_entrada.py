@@ -1,13 +1,14 @@
-"""Evalua los modelos existentes sobre un archivo externo de conteos.
+"""Evalua modelos entrenados con el historico sobre una entrada externa.
 
-La entrada se usa como poblacion de scoring. Los estimadores directos se
-reajustan con el dataset historico disponible hasta cada origen; nunca usan
-el ``Cantidad`` de la ventana que estan pronosticando.
+El archivo externo solo aporta features en el origen y reales para scoring.
+Los estimadores directos se ajustan exclusivamente con el dataset historico
+original, nunca con ``Cantidad`` de la entrada evaluada.
 """
 
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 from pathlib import Path
 
@@ -160,12 +161,9 @@ def _direct_models(frame: pd.DataFrame, historical: pd.DataFrame, cfg: dict,
     groups = feature_groups(frame)
     outputs = {}
     numeric = frame.select_dtypes(include=[np.number]).columns
-    origins = sorted(pd.to_datetime(frame.fecha_origen).unique())
-    first_origin = next((origin for origin in origins
-                         if ((pd.to_datetime(historical.fecha_objetivo) < origin) & historical.target.notna()).any()), None)
-    historical = historical[(pd.to_datetime(historical.fecha_objetivo) < first_origin) & historical.target.notna()] if first_origin is not None else historical.iloc[0:0]
+    historical = historical[historical.target.notna()].copy()
     if historical.empty:
-        raise ValueError("No hay historico anterior al primer origen de la entrada")
+        raise ValueError("No hay historico original con target para entrenar")
     for name, group_name, estimator_factory in [
         (f"GLM_NB_{group}_ENTRADA", group, lambda: NegativeBinomialGLM(
             cfg["supervised"]["nb_alpha"], cfg["supervised"]["nb_max_iter"]))
@@ -175,8 +173,7 @@ def _direct_models(frame: pd.DataFrame, historical: pd.DataFrame, cfg: dict,
         x_new = frame[cols].replace([np.inf, -np.inf], np.nan).fillna(0)
         estimator = estimator_factory().fit(
             historical[cols].replace([np.inf, -np.inf], np.nan).fillna(0), historical.target)
-        eligible = pd.to_datetime(frame.fecha_origen).ge(first_origin).to_numpy()
-        outputs[name] = _base_rows(frame, eligible, name, estimator.predict(x_new.loc[eligible]))
+        outputs[name] = _base_rows(frame, np.ones(len(frame), dtype=bool), name, estimator.predict(x_new))
 
     for name, spec in rf_specs.items():
         group_name = spec["features"]
@@ -184,8 +181,7 @@ def _direct_models(frame: pd.DataFrame, historical: pd.DataFrame, cfg: dict,
         x_new = frame[cols].replace([np.inf, -np.inf], np.nan).fillna(0)
         estimator = estimator_from_spec(spec, cfg).fit(
             historical[cols].replace([np.inf, -np.inf], np.nan).fillna(0), historical.target)
-        eligible = pd.to_datetime(frame.fecha_origen).ge(first_origin).to_numpy()
-        outputs[name] = _base_rows(frame, eligible, name, estimator.predict(x_new.loc[eligible]))
+        outputs[name] = _base_rows(frame, np.ones(len(frame), dtype=bool), name, estimator.predict(x_new))
     return outputs
 
 
@@ -194,13 +190,10 @@ def _additional_rf_models(frame: pd.DataFrame, historical: pd.DataFrame, cfg: di
     groups = feature_groups(frame)
     cols = list(dict.fromkeys(c for c in groups["FENO"]
                               if c in frame.select_dtypes(include=[np.number]).columns and c != "target"))
-    origins = sorted(pd.to_datetime(frame.fecha_origen).unique())
-    first_origin = next((origin for origin in origins
-                         if ((pd.to_datetime(historical.fecha_objetivo) < origin) & historical.target.notna()).any()), None)
-    train = historical[(pd.to_datetime(historical.fecha_objetivo) < first_origin) & historical.target.notna()].copy() if first_origin is not None else historical.iloc[0:0]
+    train = historical[historical.target.notna()].copy()
     if train.empty:
         return {"RF_RESIDUAL_M3_FENO_ENTRADA": pd.DataFrame(), "RF_H1_H7_FENO_ENTRADA": pd.DataFrame()}
-    eligible = pd.to_datetime(frame.fecha_origen).ge(first_origin).to_numpy()
+    eligible = np.ones(len(frame), dtype=bool)
     x_train = train[cols].replace([np.inf, -np.inf], np.nan).fillna(0)
     x_new = frame[cols].replace([np.inf, -np.inf], np.nan).fillna(0)
     residual_estimator = estimator_from_spec(spec, cfg).fit(
@@ -229,18 +222,14 @@ def _bayes_models(frame: pd.DataFrame, historical: pd.DataFrame, intervals: pd.D
                   "factor_extrapolacion", "corte_lag_1d", "corte_lag_2d", "corte_lag_3d",
                   "corte_sum_3d", "corte_sum_7d", "corte_sum_14d", "corte_mean_7d",
                   "horizonte_dia"]
-    origins = sorted(pd.to_datetime(frame.fecha_origen).unique())
-    first_origin = next((origin for origin in origins
-                         if ((pd.to_datetime(historical.fecha_objetivo) < origin) & historical.target.notna()).any()), None)
-    train = historical[(pd.to_datetime(historical.fecha_objetivo) < first_origin) & historical.target.notna()].copy() if first_origin is not None else historical.iloc[0:0]
+    train = historical[historical.target.notna()].copy()
     if train.empty:
-        raise ValueError("No hay historico anterior al primer origen de la entrada")
+        raise ValueError("No hay historico original con target para entrenar")
     nb = HierarchicalNB(cfg["bayes"]["hierarchical_shrinkage"]).fit(train)
     cov = CovariateHierarchicalNB(cfg["bayes"]["hierarchical_shrinkage"], cfg["bayes"]["covariate_ridge"])
     cov.fit(train, [c for c in covariates if c in train.columns])
+    posterior_cache = {}
     for origin in sorted(pd.to_datetime(frame.fecha_origen).unique()):
-        if origin < first_origin:
-            continue
         current = pd.to_datetime(frame.fecha_origen).eq(origin).to_numpy()
         current_frame = frame.loc[current]
         outputs["NB_JERARQUICO_ENTRADA"].append(_base_rows(
@@ -250,16 +239,20 @@ def _bayes_models(frame: pd.DataFrame, historical: pd.DataFrame, intervals: pd.D
         predictions = []
         for _, row in current_frame.iterrows():
             period = _period_for_date(origin, cfg["m3"]["periods"])
-            prior = fit_m3(intervals, row.finca, period, origin)
-            data = intervals[(intervals.finca == row.finca) & (intervals.periodo == period) & (intervals.fecha <= origin)]
-            posterior = DirichletM3(data, prior, cfg["bayes"]["dirichlet_prior_strength"], cfg["bayes"]["seed"])
+            cache_key = (row.finca, period, origin)
+            if cache_key not in posterior_cache:
+                prior = fit_m3(intervals, row.finca, period, origin)
+                data = intervals[(intervals.finca == row.finca) & (intervals.periodo == period) & (intervals.fecha <= origin)]
+                posterior = DirichletM3(data, prior, cfg["bayes"]["dirichlet_prior_strength"], cfg["bayes"]["seed"])
+                matrices = []
+                for _ in range(cfg["bayes"]["posterior_draws"]):
+                    q, r, loss = posterior.draw_matrix()
+                    matrices.append(M3Matrix(row.finca, period, q, r, loss, prior.audit))
+                posterior_cache[cache_key] = matrices
             x0 = np.array([row.RC_t0, row.SS_t0, row.AP_t0], float)
             lead = (pd.Timestamp(row.fecha_objetivo) - origin).days
-            draws = []
-            for _ in range(cfg["bayes"]["posterior_draws"]):
-                q, r, loss = posterior.draw_matrix()
-                matrix = M3Matrix(row.finca, period, q, r, loss, prior.audit)
-                draws.append(simulate(matrix, x0, lead, cfg["m3"]["baseline_ingress"]).iloc[-1].PC_dia_muestra * row.factor_extrapolacion)
+            draws = [simulate(matrix, x0, lead, cfg["m3"]["baseline_ingress"]).iloc[-1].PC_dia_muestra * row.factor_extrapolacion
+                     for matrix in posterior_cache[cache_key]]
             predictions.append(np.mean(draws))
         outputs["M3_DIRICHLET_MULTINOMIAL_ENTRADA"].append(_base_rows(
             frame, current, "M3_DIRICHLET_MULTINOMIAL_ENTRADA", predictions))
@@ -270,12 +263,40 @@ def _bayes_models(frame: pd.DataFrame, historical: pd.DataFrame, intervals: pd.D
 def _weekly(daily: pd.DataFrame) -> pd.DataFrame:
     if daily.empty:
         return daily
-    result = (daily.groupby(["modelo", "finca", "bloque", "fecha_origen", "semana_proyeccion"], as_index=False)
-              .agg(real=("real", "sum"), proyectado=("proyectado", "sum"), dias=("fecha_objetivo", "nunique")))
+    keys = ["modelo", "finca", "bloque", "fecha_origen", "semana_proyeccion"]
+    rows = []
+    for key, group in daily.groupby(keys, sort=False, dropna=False):
+        group = group.sort_values("fecha_objetivo")
+        observed = group[group["real"].notna()]
+        target_dates = pd.to_datetime(group["fecha_objetivo"], errors="coerce").dropna()
+        observed_dates = pd.to_datetime(observed["fecha_objetivo"], errors="coerce").dropna()
+        horizons = (set(pd.to_numeric(group["horizonte_dia"], errors="coerce").dropna().astype(int))
+                    if "horizonte_dia" in group else set(range(1, len(target_dates) + 1)))
+        complete_dates = (
+            len(observed_dates) == 7
+            and observed_dates.nunique() == 7
+            and (observed_dates.max() - observed_dates.min()).days == 6
+            and horizons == set(range(1, 8))
+        )
+        if complete_dates:
+            status = "COMPLETA"
+        elif len(observed_dates):
+            status = "PARCIAL"
+        else:
+            status = "NO EVALUABLE"
+        rows.append(dict(zip(keys, key)) | {
+            "real": observed["real"].sum(min_count=1),
+            "proyectado": observed["proyectado"].sum(min_count=1),
+            "dias": len(target_dates),
+            "dias_reales": len(observed_dates),
+            "estado_evaluacion": status,
+        })
+    result = pd.DataFrame(rows)
     result["diferencia"] = result.proyectado - result.real
     result["error_abs"] = result.diferencia.abs()
     result["razon_proyectado_real"] = np.where(result.real.ne(0), result.proyectado / result.real, np.nan)
     result["desviacion_pct"] = result.razon_proyectado_real - 1
+    result.loc[result.estado_evaluacion.eq("NO EVALUABLE"), ["real", "proyectado", "diferencia", "error_abs", "razon_proyectado_real", "desviacion_pct"]] = np.nan
     result["indicador"] = result.razon_proyectado_real.map(_status)
     return result
 
@@ -346,6 +367,21 @@ def evaluate_input(root: Path, input_path: Path) -> tuple[Path, Path]:
     workbook.save(evaluation / "evaluacion_entrada.xlsx")
     daily.to_csv(daily_path, index=False)
     weekly.to_csv(weekly_path, index=False)
+    manifest = {
+        "population": "EXTERNAL_SCORING",
+        "input_file": str(input_path.relative_to(root)) if input_path.is_relative_to(root) else str(input_path),
+        "input_sha256": hashlib.sha256(input_path.read_bytes()).hexdigest(),
+        "historical_dataset": str((datasets / "dataset_supervisado_diario.parquet").relative_to(root)),
+        "historical_max_target_date": pd.to_datetime(historical["fecha_objetivo"]).max().strftime("%Y-%m-%d"),
+        "historical_training_rows": int(historical["target"].notna().sum()),
+        "models": sorted(daily["modelo"].unique().tolist()),
+        "daily_rows": int(len(daily)),
+        "weekly_rows": int(len(weekly)),
+        "partial_week_rows": int(weekly["estado_evaluacion"].eq("PARCIAL").sum()),
+        "complete_week_rows": int(weekly["estado_evaluacion"].eq("COMPLETA").sum()),
+    }
+    (evaluation / "external_run_manifest.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return daily_path, weekly_path
 
 
