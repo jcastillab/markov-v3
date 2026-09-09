@@ -269,7 +269,7 @@ with tab_input:
         st.caption("La semana corresponde a la ventana objetivo lunes-domingo posterior al ultimo conteo semanal.")
         display = data[[c for c in ["modelo", "finca", "bloque", "semana_proyeccion", "real", "proyectado",
                                     "diferencia", "error_abs", "razon_proyectado_real", "desviacion_pct", "indicador"] if c in data]]
-        styled = display.style.applymap(
+        styled = display.style.map(
             lambda value: "background-color: #c6efce" if value == "ACIERTO" else
             ("background-color: #ffeb9c" if value == "CERCA" else
              ("background-color: #ffc7ce" if value == "NO ACIERTO" else "")), subset=["indicador"])
