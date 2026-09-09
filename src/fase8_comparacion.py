@@ -31,6 +31,8 @@ def _bootstrap(path, reps, seed):
 def main():
     root = Path(__file__).resolve().parents[1]; cfg = __import__("canonical").load_config(root / "config/pipeline.yaml")
     evaluation = root / cfg["paths"]["outputs"] / "evaluation"
+    rolling_manifest_path = evaluation / "rolling_models_manifest.json"
+    rolling_manifest = json.loads(rolling_manifest_path.read_text(encoding="utf-8")) if rolling_manifest_path.exists() else {}
     files = ["metrics_fase2_m3.csv", "metrics_fase3_p32.csv", "metrics_fase4_podas.csv", "metrics_fase5_clima.csv",
               "metrics_fase6_supervisado.csv", "metrics_fase7_bayes.csv",
               "metrics_rf_ablation_m3.csv", "metrics_rolling_origin.csv"]
@@ -72,13 +74,16 @@ def main():
               "bootstrap_reps": cfg["evaluation"]["bootstrap_reps"]}
     (evaluation / "champion_manifest.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     lines = ["# Reporte Fase 8 - Comparacion final", "", "## Poblacion comun", "",
-             f"El ranking primario usa `{champion_split}` causal con {population_n:,} observaciones diarias comunes entre modelos.",
-             "Los experimentos retrospectivos P32 y las poblaciones o escalas distintas quedan excluidos.", "", "## Ranking", "",
-             "| Modelo | WAPE | IC bootstrap 95% | Decision |", "|---|---:|---:|---|"]
+              f"El ranking primario usa `{champion_split}` causal con {population_n:,} observaciones diarias comunes entre modelos.",
+              "Los experimentos retrospectivos P32 y las poblaciones o escalas distintas quedan excluidos.", "", "## Ranking", "",
+              "| Modelo | WAPE | IC bootstrap 95% | Decision |", "|---|---:|---:|---|"]
     for _, row in ranked.iterrows():
         interval = (f"{row.wape_ci95_low:.2%}-{row.wape_ci95_high:.2%}"
                     if pd.notna(row.wape_ci95_low) else "n/d")
         lines.append(f"| {row.experiment_id} | {row.wape:.2%} | {interval} | {row.decision} |")
+    if rolling_manifest.get("excluded"):
+        lines += ["", "## Exclusiones del rolling", ""]
+        lines += [f"- `{model}`: {reason}." for model, reason in rolling_manifest["excluded"].items()]
     lines += ["", "## Decision", "",
               f"`{champion}` es el champion provisional bajo rolling-origin causal.",
               "M3 permanece como baseline obligatorio y referencia mecanistica.",

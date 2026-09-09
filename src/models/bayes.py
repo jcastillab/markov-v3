@@ -134,14 +134,17 @@ class HierarchicalNB:
         ], dtype=float)
 
     def predictive_interval(self, frame, draws=100, seed=42):
+        samples = self.predictive_samples(frame, draws, seed)
+        return np.quantile(samples, [.1, .9, .025, .975], axis=0)
+
+    def predictive_samples(self, frame, draws=100, seed=42):
         rng = np.random.default_rng(seed)
         posterior = [self._posterior_for_row(row) for row in frame.itertuples(index=False)]
         lambdas = np.column_stack([
             rng.gamma(shape, 1.0 / rate, size=draws)
             for shape, rate in posterior
         ]) if posterior else np.empty((draws, 0))
-        samples = rng.poisson(lambdas)
-        return np.quantile(samples, [.1, .9, .025, .975], axis=0)
+        return rng.poisson(lambdas)
 
 
 class CovariateHierarchicalNB:
@@ -214,9 +217,12 @@ class CovariateHierarchicalNB:
         return baseline * np.exp(np.clip(x @ self.coef_, -3, 3))
 
     def predictive_interval(self, frame, draws=100, seed=42):
+        samples = self.predictive_samples(frame, draws, seed)
+        return np.quantile(samples, [.1, .9, .025, .975], axis=0)
+
+    def predictive_samples(self, frame, draws=100, seed=42):
         mean = self.predict(frame)
         rng = np.random.default_rng(seed)
         shape = 1 / self.alpha
         lambdas = rng.gamma(shape, mean / shape, size=(draws, len(mean)))
-        samples = rng.poisson(lambdas)
-        return np.quantile(samples, [.1, .9, .025, .975], axis=0)
+        return rng.poisson(lambdas)

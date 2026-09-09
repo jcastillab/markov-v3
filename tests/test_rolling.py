@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from src.evaluacion_rolling import _common_observed, _selected_predictions
+from src.evaluacion_rolling import _common_observed, _common_observed_many, _selected_predictions
 from src.reporte_excel import weekly_status
 
 
@@ -47,7 +47,30 @@ def test_common_observed_population_has_identical_keys():
     keys = {"finca": ["A", "A"], "bloque": ["1", "1"],
             "fecha_origen": ["2026-01-01", "2026-01-02"],
             "fecha_objetivo": ["2026-01-02", "2026-01-03"], "horizonte_dia": [1, 1]}
-    left = pd.DataFrame({**keys, "real": [1, 2], "proyectado": [1, 2]})
-    right = pd.DataFrame({**keys, "real": [1, np.nan], "proyectado": [1, 2]})
+    left = pd.DataFrame({**keys, "estado_ventana": ["VALIDA", "VALIDA"],
+                         "real": [1, 2], "proyectado": [1, 2]})
+    right = pd.DataFrame({**keys, "estado_ventana": ["VALIDA", "VALIDA"],
+                          "real": [1, np.nan], "proyectado": [1, 2]})
     left_common, right_common = _common_observed(left, right)
     assert len(left_common) == len(right_common) == 1
+
+
+def test_common_observed_excludes_partial_windows():
+    row = {"finca": "A", "bloque": "1", "fecha_origen": "2026-01-01",
+           "fecha_objetivo": "2026-01-02", "horizonte_dia": 1,
+           "real": 1, "proyectado": 1}
+    left = pd.DataFrame([{**row, "estado_ventana": "PARCIAL"}])
+    right = pd.DataFrame([{**row, "estado_ventana": "PARCIAL"}])
+    with np.testing.assert_raises_regex(ValueError, "no tienen observaciones"):
+        _common_observed(left, right)
+
+
+def test_common_observed_many_uses_intersection_of_every_challenger():
+    base = {"finca": ["A", "A"], "bloque": ["1", "1"],
+            "fecha_origen": ["2026-01-01", "2026-01-02"],
+            "fecha_objetivo": ["2026-01-02", "2026-01-03"], "horizonte_dia": [1, 1],
+            "estado_ventana": ["VALIDA", "VALIDA"], "real": [1, 2], "proyectado": [1, 2]}
+    late = pd.DataFrame(base).iloc[1:].copy()
+    common = _common_observed_many({"m3": pd.DataFrame(base), "rf": pd.DataFrame(base), "nb": late})
+    assert all(len(frame) == 1 for frame in common.values())
+    assert all(frame["fecha_origen"].iloc[0] == "2026-01-02" for frame in common.values())

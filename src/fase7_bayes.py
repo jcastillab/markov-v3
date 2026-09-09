@@ -16,6 +16,38 @@ from models.bayes import CovariateHierarchicalNB, DirichletM3, HierarchicalNB
 from models.m3 import _period_for_date, fit_m3, simulate
 
 
+def weekly_intervals(trace, samples, model):
+    """Agrega draws por ventana antes de calcular cuantiles semanales."""
+    keys = ["finca", "bloque", "fecha_origen", "semana_proyeccion"]
+    rows = []
+    for key, positions in trace.groupby(keys, dropna=False).indices.items():
+        positions = np.asarray(list(positions), dtype=int)
+        total_draws = samples[:, positions].sum(axis=1)
+        row = dict(zip(keys, key))
+        row.update(model=model, real=float(trace.iloc[positions].real.sum()),
+                   pred=float(total_draws.mean()), low80=float(np.quantile(total_draws, .1)),
+                   high80=float(np.quantile(total_draws, .9)), low95=float(np.quantile(total_draws, .025)),
+                   high95=float(np.quantile(total_draws, .975)), n_dias=len(positions))
+        row["coverage80"] = float(row["low80"] <= row["real"] <= row["high80"])
+        row["coverage95"] = float(row["low95"] <= row["real"] <= row["high95"])
+        row["width80"] = row["high80"] - row["low80"]
+        row["width95"] = row["high95"] - row["low95"]
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def posterior_draws(trace, samples, model):
+    """Persiste draws diarios para agregar intervalos sin sumar cuantiles."""
+    keys = ["finca", "bloque", "fecha_origen", "semana_proyeccion"]
+    base = trace[keys].reset_index(drop=True)
+    draws, rows = samples.shape
+    repeated = base.loc[base.index.repeat(draws)].reset_index(drop=True)
+    repeated["model"] = model
+    repeated["draw"] = np.tile(np.arange(draws), rows)
+    repeated["sample"] = samples.T.reshape(-1)
+    return repeated
+
+
 def main():
     root = Path(__file__).resolve().parents[1]; cfg = load_config(root / "config" / "pipeline.yaml")
     out = root / cfg["paths"]["outputs"]; datasets, evaluation, models = [out / x for x in ("datasets", "evaluation", "models")]
@@ -36,7 +68,8 @@ def main():
     nb = HierarchicalNB(cfg["bayes"]["hierarchical_shrinkage"]).fit(train)
     pred_nb = nb.predict(valid)
     nb_metrics = metrics(valid.target, pd.Series(pred_nb))
-    intervals_nb = nb.predictive_interval(valid, cfg["bayes"]["posterior_draws"], cfg["bayes"]["seed"])
+    samples_nb = nb.predictive_samples(valid, cfg["bayes"]["posterior_draws"], cfg["bayes"]["seed"])
+    intervals_nb = np.quantile(samples_nb, [.1, .9, .025, .975], axis=0)
     coverage80 = np.mean((valid.target.to_numpy() >= intervals_nb[0]) & (valid.target.to_numpy() <= intervals_nb[1]))
     coverage95 = np.mean((valid.target.to_numpy() >= intervals_nb[2]) & (valid.target.to_numpy() <= intervals_nb[3]))
     rows = [{"experiment_id": "NB_JERARQUICO", "split": "VALIDATION", "causal": True,
@@ -50,7 +83,8 @@ def main():
     cov_nb = CovariateHierarchicalNB(cfg["bayes"]["hierarchical_shrinkage"],
                                      cfg["bayes"].get("covariate_ridge", 1.0)).fit(train, bayes_features)
     pred_cov = cov_nb.predict(valid)
-    intervals_cov = cov_nb.predictive_interval(valid, cfg["bayes"]["posterior_draws"], cfg["bayes"]["seed"])
+    samples_cov = cov_nb.predictive_samples(valid, cfg["bayes"]["posterior_draws"], cfg["bayes"]["seed"])
+    intervals_cov = np.quantile(samples_cov, [.1, .9, .025, .975], axis=0)
     cov_metrics = metrics(valid.target, pd.Series(pred_cov))
     rows.append({"experiment_id": "NB_JERARQUICO_COVARIABLES", "split": "VALIDATION", "causal": True,
                  "coverage_interval_80": np.mean((valid.target.to_numpy() >= intervals_cov[0]) &
@@ -59,7 +93,7 @@ def main():
                                                    (valid.target.to_numpy() <= intervals_cov[3])),
                  "ancho_medio_intervalo": float(np.mean(intervals_cov[1] - intervals_cov[0])), **cov_metrics})
     # Posterior Dirichlet por origen, con matriz M3 causal como centro del prior.
-    pred, lows, highs, lows95, highs95, real, summaries = [], [], [], [], [], [], []
+    pred, lows, highs, lows95, highs95, real, summaries, dirichlet_samples = [], [], [], [], [], [], [], []
     for row_i, (_, row) in enumerate(valid.iterrows()):
         origin = pd.Timestamp(row.fecha_origen); period = _period_for_date(origin, cfg["m3"]["periods"])
         prior = fit_m3(intervals, row.finca, period, origin)
@@ -77,6 +111,7 @@ def main():
         highs.append(float(np.quantile(samples, .9)))
         lows95.append(float(np.quantile(samples, .025)))
         highs95.append(float(np.quantile(samples, .975))); real.append(row.target)
+        dirichlet_samples.append(samples)
         summary = posterior.posterior_summary(cfg["bayes"]["posterior_draws"])
         summary["finca"], summary["periodo"], summary["fecha_origen"] = row.finca, period, origin
         summaries.append(summary)
@@ -99,6 +134,17 @@ def main():
                  low80=intervals_cov[0], high80=intervals_cov[1],
                  low95=intervals_cov[2], high95=intervals_cov[3]).to_csv(
         evaluation / "predictions_nb_jerarquico_covariables.csv", index=False)
+    weekly = pd.concat([
+        weekly_intervals(trace.assign(real=valid.target.to_numpy()), samples_nb, "NB_JERARQUICO"),
+        weekly_intervals(trace.assign(real=valid.target.to_numpy()), samples_cov, "NB_JERARQUICO_COVARIABLES"),
+        weekly_intervals(trace.assign(real=real), np.column_stack(dirichlet_samples), "M3_DIRICHLET_MULTINOMIAL"),
+    ], ignore_index=True)
+    weekly.to_csv(evaluation / "bayes_weekly_intervals.csv", index=False)
+    pd.concat([
+        posterior_draws(trace, samples_nb, "NB_JERARQUICO"),
+        posterior_draws(trace, samples_cov, "NB_JERARQUICO_COVARIABLES"),
+        posterior_draws(trace, np.column_stack(dirichlet_samples), "M3_DIRICHLET_MULTINOMIAL"),
+    ], ignore_index=True).to_csv(evaluation / "bayes_posterior_draws.csv", index=False)
     pd.DataFrame(rows).to_csv(evaluation / "metrics_fase7_bayes.csv", index=False)
     pd.concat(summaries, ignore_index=True).to_csv(models / "dirichlet_posterior_summary.csv", index=False)
     (models / "bayes_manifest.json").write_text(json.dumps({"phase": 7, "causal": True,

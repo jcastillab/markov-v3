@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 import os
 import json
+import ctypes
 from pathlib import Path
 
 import numpy as np
@@ -17,10 +18,16 @@ import pandas as pd
 from joblib import Parallel, delayed
 from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor, RandomForestRegressor
 
-from canonical import load_config
-from evaluation.metrics import metrics
-from evaluation.split import selection_masks
-from models.supervised import build_supervised_dataset, feature_groups
+try:
+    from canonical import load_config
+    from evaluation.metrics import metrics
+    from evaluation.split import selection_masks
+    from models.supervised import build_supervised_dataset, feature_groups
+except ModuleNotFoundError:
+    from src.canonical import load_config
+    from src.evaluation.metrics import metrics
+    from src.evaluation.split import selection_masks
+    from src.models.supervised import build_supervised_dataset, feature_groups
 
 
 def split_frame(frame, windows, cfg):
@@ -38,12 +45,38 @@ def score(y, pred, frame):
             **{f"weekly_{k}": v for k, v in weekly_metrics.items()}}
 
 
-def available_jobs(parallel_cfg):
-    """Calcula los procesos de experimentos sin sobreasignar la máquina."""
+def available_memory_gb():
+    """Memoria física disponible en Windows y plataformas POSIX."""
+    if os.name == "nt":
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [("length", ctypes.c_ulong), ("memory_load", ctypes.c_ulong),
+                        ("total_phys", ctypes.c_ulonglong), ("avail_phys", ctypes.c_ulonglong),
+                        ("total_page", ctypes.c_ulonglong), ("avail_page", ctypes.c_ulonglong),
+                        ("total_virtual", ctypes.c_ulonglong), ("avail_virtual", ctypes.c_ulonglong),
+                        ("avail_extended_virtual", ctypes.c_ulonglong)]
+        status = MemoryStatus(); status.length = ctypes.sizeof(MemoryStatus)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return status.avail_phys / 1024 ** 3
+    try:
+        return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1024 ** 3
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
+def parallel_plan(parallel_cfg):
+    """Distribuye procesos por CPU y RAM, sin paralelismo anidado de bosques."""
+    cpus = os.cpu_count() or 1
     requested = parallel_cfg.get("n_jobs", "auto")
     if requested == "auto":
-        requested = (os.cpu_count() or 1) - int(parallel_cfg.get("reserve_cpus", 0))
-    return max(1, min(int(requested), os.cpu_count() or 1))
+        requested = cpus - int(parallel_cfg.get("reserve_cpus", 0))
+    workers = max(1, min(int(requested), cpus))
+    free_gb = available_memory_gb()
+    if free_gb is not None:
+        usable = max(0.0, free_gb - float(parallel_cfg.get("reserve_memory_gb", 0)))
+        per_worker = float(parallel_cfg.get("estimated_memory_per_worker_gb", 1.0))
+        workers = min(workers, max(1, int(usable // per_worker)))
+    return {"workers": workers, "model_n_jobs": 1, "free_memory_gb": free_gb,
+            "backend": parallel_cfg.get("backend", "processes")}
 
 
 def fit_rf_experiment(name, cols, x, y, train, valid, frame, params, model_n_jobs):
@@ -134,8 +167,8 @@ def main():
     max_features = rf_cfg["max_features"]
     criteria = rf_cfg["criterion_grid"]
     n_estimators = rf_cfg.get("n_estimators_grid", [rf_cfg["n_estimators"]])
-    jobs = available_jobs(rf_cfg.get("parallel", {}))
-    model_n_jobs = int(rf_cfg.get("parallel", {}).get("model_n_jobs", 1))
+    plan = parallel_plan(rf_cfg.get("parallel", {}))
+    jobs, model_n_jobs = plan["workers"], plan["model_n_jobs"]
     tasks = []
 
     for name, requested_cols in groups.items():
@@ -156,8 +189,9 @@ def main():
                                               model_n_jobs))
 
     print(f"Ejecutando {len(tasks)} combinaciones RF con {jobs} procesos y "
-          f"{model_n_jobs} hilo(s) por modelo")
-    results = Parallel(n_jobs=jobs, prefer="processes")(
+          f"{model_n_jobs} hilo(s) por modelo; RAM libre: {plan['free_memory_gb']:.1f} GB" if plan["free_memory_gb"] is not None else
+          f"Ejecutando {len(tasks)} combinaciones RF con {jobs} procesos y {model_n_jobs} hilo(s) por modelo")
+    results = Parallel(n_jobs=jobs, prefer=plan["backend"], max_nbytes="32M")(
         delayed(fit_rf_experiment)(*task) for task in tasks)
     rows = [row for row, _ in results]
     predictions = {row["model"]: pred for (row, pred) in results}
@@ -184,6 +218,11 @@ def main():
     result = add_selection_scores(pd.DataFrame(rows), cfg)
     result = result.sort_values("selection_score")
     result.to_csv(evaluation / "metrics_hyperparametros.csv", index=False)
+    best_by_features = result[result.family.eq("RF")].sort_values("weekly_wape").groupby("features", as_index=False).first()
+    best_by_features.to_csv(evaluation / "rf_mejores_por_grupo.csv", index=False)
+    (evaluation / "rf_hardware_plan.json").write_text(json.dumps({
+        **plan, "cpu_logical": os.cpu_count() or 1, "n_experiments": len(tasks),
+        "selection_rows": int(valid.sum())}, indent=2), encoding="utf-8")
     selection_targets = {
         "daily_wape": "daily_wape", "daily_r2": "daily_r2", "daily_mae": "daily_mae",
         "daily_rmse": "daily_rmse", "daily_bias_pct": "daily_bias_pct",

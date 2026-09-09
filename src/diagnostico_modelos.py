@@ -107,6 +107,33 @@ def collinearity_diagnostics(frame, cols):
     return pd.DataFrame(pairs).sort_values("correlacion_abs", ascending=False), vif.sort_values("vif", ascending=False)
 
 
+def lag_diagnostics(frame, cols, train):
+    """Resume colinealidad y relacion con target de variables rezagadas en train."""
+    lag_cols = [col for col in cols if "lag" in col.lower()]
+    if not lag_cols:
+        return pd.DataFrame(), pd.DataFrame()
+    values = frame.loc[train, lag_cols].replace([np.inf, -np.inf], np.nan)
+    values = values.loc[:, values.nunique(dropna=True).gt(1)]
+    corr = values.corr()
+    pairs = []
+    for i, left in enumerate(corr.columns):
+        for right in corr.columns[i + 1:]:
+            value = corr.loc[left, right]
+            if pd.notna(value):
+                pairs.append({"variable_1": left, "variable_2": right,
+                              "correlacion": float(value),
+                              "correlacion_abs": abs(float(value))})
+    target = pd.to_numeric(frame.loc[train, "target"], errors="coerce")
+    target_rows = []
+    for col in values.columns:
+        pair = pd.concat([values[col], target], axis=1).dropna()
+        value = pair.iloc[:, 0].corr(pair.iloc[:, 1]) if len(pair) > 1 else np.nan
+        target_rows.append({"variable": col, "correlacion_target": value,
+                            "n": len(pair)})
+    return (pd.DataFrame(pairs).sort_values("correlacion_abs", ascending=False),
+            pd.DataFrame(target_rows).sort_values("correlacion_target", key=lambda s: s.abs(), ascending=False))
+
+
 def leakage_audit(frame, cols):
     forbidden = {"target", "real", "corte_comercial_real", "fecha_objetivo"}
     suspicious = sorted(set(cols) & forbidden)
@@ -138,11 +165,14 @@ def main():
     train, valid = split_frame(frame, windows, cfg)
     overfit, importance = fit_horizon_diagnostics(frame, windows, cfg, cols)
     pairs, vif = collinearity_diagnostics(frame, cols)
+    lag_pairs, lag_target = lag_diagnostics(frame, cols, train)
     features = feature_diagnostics(frame, cols, train, valid)
     leakage = leakage_audit(frame, cols)
     overfit.to_csv(evaluation / "diagnostico_sobreajuste.csv", index=False)
     importance.to_csv(evaluation / "diagnostico_importancia_horizonte.csv", index=False)
     pairs.to_csv(evaluation / "diagnostico_correlaciones_altas.csv", index=False)
+    lag_pairs.to_csv(evaluation / "diagnostico_correlaciones_rezagos.csv", index=False)
+    lag_target.to_csv(evaluation / "diagnostico_correlacion_target_rezagos.csv", index=False)
     vif.to_csv(evaluation / "diagnostico_vif.csv", index=False)
     features.to_csv(evaluation / "diagnostico_features.csv", index=False)
     leakage.to_csv(evaluation / "diagnostico_leakage.csv", index=False)

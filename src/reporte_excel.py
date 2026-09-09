@@ -57,7 +57,21 @@ PREDICTION_FILES_FIXED = {
 
 PREDICTION_FILES_ROLLING = {
     "E00_M3_BASE_ROLLING": "outputs/evaluation/predictions_e00_m3_base_rolling.csv",
+    "E01_M3_INGRESO_CALIBRADO_ROLLING": "outputs/evaluation/predictions_e01_m3_ingreso_calibrado_rolling.csv",
     "MODELO_SELECCIONADO_ROLLING": "outputs/evaluation/predictions_modelo_seleccionado_rolling.csv",
+    "RF_OPT_FENO_ROLLING": "outputs/evaluation/predictions_rf_opt_feno_rolling.csv",
+    "RF_OPT_FENO_PODA_ROLLING": "outputs/evaluation/predictions_rf_opt_feno_poda_rolling.csv",
+    "RF_OPT_FENO_CLIMA_ROLLING": "outputs/evaluation/predictions_rf_opt_feno_clima_rolling.csv",
+    "RF_OPT_FENO_PODA_CLIMA_ROLLING": "outputs/evaluation/predictions_rf_opt_feno_poda_clima_rolling.csv",
+    "GLM_NB_FENO_ROLLING": "outputs/evaluation/predictions_glm_nb_feno_rolling.csv",
+    "GLM_NB_FENO_PODA_ROLLING": "outputs/evaluation/predictions_glm_nb_feno_poda_rolling.csv",
+    "GLM_NB_FENO_CLIMA_ROLLING": "outputs/evaluation/predictions_glm_nb_feno_clima_rolling.csv",
+    "GLM_NB_FENO_PODA_CLIMA_ROLLING": "outputs/evaluation/predictions_glm_nb_feno_poda_clima_rolling.csv",
+    "RF_RESIDUAL_M3_FENO_ROLLING": "outputs/evaluation/predictions_rf_residual_m3_feno_rolling.csv",
+    "RF_H1_H7_FENO_ROLLING": "outputs/evaluation/predictions_rf_h1_h7_feno_rolling.csv",
+    "NB_JERARQUICO_ROLLING": "outputs/evaluation/predictions_nb_jerarquico_rolling.csv",
+    "NB_JERARQUICO_COVARIABLES_ROLLING": "outputs/evaluation/predictions_nb_jerarquico_covariables_rolling.csv",
+    "M3_DIRICHLET_MULTINOMIAL_ROLLING": "outputs/evaluation/predictions_m3_dirichlet_multinomial_rolling.csv",
 }
 
 
