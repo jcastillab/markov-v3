@@ -1,510 +1,500 @@
-"""Dashboard interactivo local para explorar el tablero de modelos."""
+"""Dashboard tecnico de validacion semanal, incertidumbre y diagnosticos."""
 
-from pathlib import Path
+from __future__ import annotations
+
 import json
+from pathlib import Path
 
-import pandas as pd
-import numpy as np
-import streamlit as st
 import altair as alt
-from evaluation.metrics import metrics as calculate_metrics
-from evaluation.split import temporal_masks
-from reporte_excel import (PREDICTION_FILES_FIXED, PREDICTION_FILES_ROLLING,
-                           _metrics, _traces, weekly_status)
-from models.supervised import feature_groups
-from models.supervised import build_supervised_dataset
-from models.bayes import HierarchicalNB
-from models.selection import estimator_from_spec, read_selection
+import numpy as np
+import pandas as pd
+import streamlit as st
+
 from canonical import load_config
+from dashboard_validation import (complete_windows, load_validation_predictions, model_scores,
+                                  operational_summary, operational_weekly, operational_weekly_selected,
+                                  weekly_status)
+from evaluacion_entrada import evaluate_input
+from reporte_excel import PREDICTION_FILES, PREDICTION_FILES_ROLLING
 
 
 ROOT = Path(__file__).resolve().parents[1]
+FIXED_VALIDATION_FILES = {
+    **PREDICTION_FILES,
+    "E00_M3_BASE": "outputs/predictions/E00_M3_BASE.csv",
+    "RF_H1_H7_FENO_SIN_M3": "outputs/evaluation/predictions_rf_h1_h7_feno_sin_m3.csv",
+}
+BAYES_FILES = {
+    "NB_JERARQUICO": "outputs/evaluation/predictions_nb_jerarquico.csv",
+    "NB_JERARQUICO_COVARIABLES": "outputs/evaluation/predictions_nb_jerarquico_covariables.csv",
+    "M3_DIRICHLET_MULTINOMIAL": "outputs/evaluation/predictions_m3_dirichlet.csv",
+}
 
 
-def add_weekly_status(weekly):
-    weekly = weekly.copy()
-    weekly["semana_label"] = weekly["semana_proyeccion"].map(
-        lambda value: str(int(value)) if pd.notna(value) else "N.A.")
-    weekly["estado_ventana"] = pd.Series(pd.NA, index=weekly.index, dtype="string")
-    weekly.loc[weekly.filas_reales.eq(0), "estado_ventana"] = "PENDIENTE_REAL"
-    weekly.loc[weekly.filas_reales.eq(weekly.filas_pronosticadas) &
-               weekly.estado_fuente.eq("VALIDA"), "estado_ventana"] = "VALIDA"
-    weekly.loc[weekly.filas_reales.between(1, weekly.filas_pronosticadas - 1), "estado_ventana"] = "PARCIAL"
-    weekly["proyectado_modelo"] = weekly["proyectado"]
-    weekly["proyectado_total_modelo"] = weekly["proyectado_total"]
-    weekly["proyectado_total"] = np.ceil(weekly["proyectado_total"])
-    weekly["proyectado"] = np.ceil(weekly["proyectado"])
-    weekly["acierto_pct"] = 1 - (weekly["real"] - weekly["proyectado_modelo"]) / weekly["real"].where(
-        weekly.filas_reales.gt(0) & weekly["real"].ne(0))
-    weekly["estado"] = weekly["acierto_pct"].map(weekly_status)
-    return weekly
-
-
-def week_label(value):
-    return str(int(value)) if pd.notna(value) else "N.A."
-
-
-def aggregate_weekly(daily, by_block=False):
-    keys = ["modelo", "split", "finca", "semana_proyeccion"]
-    if by_block:
-        keys.insert(2, "bloque")
-    grouped = daily.groupby(keys, as_index=False, dropna=False)
-    weekly = grouped.agg(
-        fecha_origen=("fecha_origen", "min"),
-        real=("real", lambda s: s.sum(min_count=1)),
-        proyectado_total=("proyectado_modelo", "sum"),
-        dias=("fecha_objetivo", "nunique"),
-        filas_pronosticadas=("real", "size"),
-        filas_reales=("real", "count"),
-        estado_fuente=("estado_ventana", lambda s: "VALIDA" if s.eq("VALIDA").all() else
-                       ("PENDIENTE_REAL" if s.eq("PENDIENTE_REAL").all() else "PARCIAL")),
-    )
-    observed = daily[daily.real.notna()].groupby(keys, as_index=False, dropna=False).agg(
-        proyectado=("proyectado_modelo", "sum"))
-    weekly = weekly.merge(observed, on=keys, how="left", validate="one_to_one")
-    weekly["proyectado"] = weekly["proyectado"].fillna(0.0)
-    return add_weekly_status(weekly)
-
-
-def complete_validation_daily(daily, weekly_view):
-    """Conserva solo filas diarias de combinaciones finca-semana completas."""
-    key_cols = ["modelo", "split", "finca", "semana_proyeccion"]
-    if "bloque" in weekly_view:
-        key_cols.insert(2, "bloque")
-    valid_keys = weekly_view.loc[
-        weekly_view.estado_ventana.eq("VALIDA"), key_cols
-    ].drop_duplicates()
-    if valid_keys.empty:
-        return daily.iloc[0:0].copy()
-    return (daily.merge(valid_keys.assign(_valid=True), on=key_cols, how="inner")
-            .drop(columns="_valid")
-            .dropna(subset=["real"]))
+def _pct(value, signed=False):
+    if pd.isna(value):
+        return "N.A."
+    return f"{value:+.2%}" if signed else f"{value:.2%}"
 
 
 @st.cache_data
-def load_training_traces():
-    """Genera trazas in-sample para completar la tabla por particion."""
-    datasets = ROOT / "outputs/datasets"
-    required = ["forecast_windows.parquet", "fact_bloque_dia.parquet",
-                "transition_intervals_tradicional.parquet", "poda_features.parquet",
-                "clima_features.parquet"]
-    if not all((datasets / name).exists() for name in required):
-        return []
+def load_data(evaluation_mode: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     cfg = load_config(ROOT / "config/pipeline.yaml")
-    windows, fact = (pd.read_parquet(datasets / name) for name in required[:2])
-    intervals, pruning, climate = (pd.read_parquet(datasets / name) for name in required[2:])
-    frame = build_supervised_dataset(windows, fact, intervals, cfg, pruning, climate)
-    train_mask, _ = temporal_masks(frame, cfg, origin_values=windows["fecha_origen"])
-    train = pd.Series(train_mask, index=frame.index)
-    base = frame.loc[train].copy()
-    common = ["finca", "bloque", "fecha_origen", "fecha_objetivo",
-              "semana_proyeccion", "horizonte_dia", "target"]
-    traces = []
-
-    m3 = base[common + ["M3_pred_bloque"]].rename(
-        columns={"target": "real", "M3_pred_bloque": "proyectado"})
-    m3["modelo"], m3["split"] = "E00_M3_BASE", "TRAIN"
-    traces.append(m3)
-
-    selection_path = ROOT / "outputs/evaluation/selected_model_manifest.json"
-    if not selection_path.exists():
-        return traces
-    selected = read_selection(selection_path)
-    group = feature_groups(frame)[selected["features"]]
-    cols = [c for c in dict.fromkeys(group) if c in frame.select_dtypes(include=[np.number]).columns]
-    x = frame[cols].replace([np.inf, -np.inf], np.nan).fillna(0)
-    model = estimator_from_spec(selected, cfg)
-    model.fit(x.loc[train], frame.loc[train, "target"])
-    selected_trace = base[common].rename(columns={"target": "real"})
-    selected_trace["proyectado"] = model.predict(x.loc[train])
-    selected_trace["modelo"], selected_trace["split"] = "BEST_COMPOSITE", "TRAIN"
-    traces.append(selected_trace)
-
-    bayes = HierarchicalNB(cfg["bayes"]["hierarchical_shrinkage"]).fit(base)
-    bayes_trace = base[common].rename(columns={"target": "real"})
-    bayes_trace["proyectado"] = bayes.predict(base)
-    bayes_trace["modelo"], bayes_trace["split"] = "NB_JERARQUICO", "TRAIN"
-    traces.append(bayes_trace)
-    return traces
+    if evaluation_mode == "Rolling origin":
+        files, split = PREDICTION_FILES_ROLLING, "ROLLING_VALIDATION"
+    else:
+        files, split = FIXED_VALIDATION_FILES, "FIXED_VALIDATION"
+    daily = load_validation_predictions(ROOT, files, split)
+    if daily.empty:
+        return pd.DataFrame(), daily
+    return complete_windows(daily, int(cfg["forecast"]["horizon_days"]))
 
 
 @st.cache_data
-def load_data(evaluation_mode):
-    metrics = _metrics(ROOT)
-    files = PREDICTION_FILES_FIXED if evaluation_mode == "Validación fija" else PREDICTION_FILES_ROLLING
-    traces = _traces(ROOT, files)
-    daily = []
-    for model, frame in traces.items():
-        frame = frame.copy()
-        frame["fecha_objetivo"] = pd.to_datetime(frame["fecha_objetivo"])
-        if "semana_proyeccion" not in frame:
-            frame["semana_proyeccion"] = frame["fecha_objetivo"].dt.isocalendar().year * 100 + frame["fecha_objetivo"].dt.isocalendar().week
-        frame["semana_label"] = frame["semana_proyeccion"].map(week_label)
-        frame["split"] = "ROLLING" if evaluation_mode == "Rolling origin" else "VALIDATION"
-        frame["acierto_pct"] = (1 - (frame["real"] - frame["proyectado_modelo"]) / frame["real"].where(frame["real"] != 0)).astype(float)
-        frame["error_abs"] = (frame["proyectado_modelo"] - frame["real"]).abs()
-        daily.append(frame)
-    training = load_training_traces() if evaluation_mode == "Validación fija" else []
-    daily.extend(training)
-    for frame in training:
-        frame["fecha_objetivo"] = pd.to_datetime(frame["fecha_objetivo"])
-        frame["semana_label"] = frame["semana_proyeccion"].map(week_label)
-        frame["proyectado_modelo"] = frame["proyectado"]
-        frame["acierto_pct"] = (1 - (frame["real"] - frame["proyectado_modelo"]) /
-                                 frame["real"].where(frame["real"] != 0)).astype(float)
-        frame["error_abs"] = (frame["proyectado_modelo"] - frame["real"]).abs()
-    daily = pd.concat(daily, ignore_index=True) if daily else pd.DataFrame()
-    return metrics, daily, aggregate_weekly(daily), aggregate_weekly(daily, by_block=True)
+def load_bayesian_weekly() -> pd.DataFrame:
+    path = ROOT / "outputs/evaluation/bayes_weekly_intervals.csv"
+    return pd.read_csv(path, parse_dates=["fecha_origen"]) if path.exists() else pd.DataFrame()
 
 
 @st.cache_data
-def load_hyperparameter_results():
-    path = ROOT / "outputs/evaluation/metrics_hyperparametros.csv"
-    return pd.read_csv(path) if path.exists() else pd.DataFrame()
+def load_bayesian_draws() -> pd.DataFrame:
+    path = ROOT / "outputs/evaluation/bayes_posterior_draws.csv"
+    return pd.read_csv(path, parse_dates=["fecha_origen"]) if path.exists() else pd.DataFrame()
 
 
 @st.cache_data
-def load_model_inputs():
-    path = ROOT / "outputs/datasets/dataset_supervisado_diario.parquet"
-    if not path.exists():
-        return pd.DataFrame()
-    frame = pd.read_parquet(path)
-    cols = list(dict.fromkeys(c for c in feature_groups(frame)["FENO"]
-                             if c in frame.select_dtypes(include=[np.number]).columns
-                             and c != "target"))
-    base_cols = ["finca", "bloque", "fecha_origen", "fecha_objetivo",
-                 "semana_proyeccion", "horizonte_dia", "target"]
-    return frame[base_cols + [c for c in cols if c not in base_cols]]
-
-
-@st.cache_data
-def load_diagnostics():
-    def read(name):
+def load_diagnostics() -> dict[str, pd.DataFrame]:
+    names = {
+        "overfit": "diagnostico_sobreajuste.csv",
+        "importance": "diagnostico_importancia_horizonte.csv",
+        "pairs": "diagnostico_correlaciones_altas.csv",
+        "lag_pairs": "diagnostico_correlaciones_rezagos.csv",
+        "lag_target": "diagnostico_correlacion_target_rezagos.csv",
+        "vif": "diagnostico_vif.csv",
+        "features": "diagnostico_features.csv",
+        "leakage": "diagnostico_leakage.csv",
+        "bayes_metrics": "metrics_fase7_bayes.csv",
+    }
+    result = {}
+    for key, name in names.items():
         path = ROOT / "outputs/evaluation" / name
-        return pd.read_csv(path) if path.exists() else pd.DataFrame()
-    return {"overfit": read("diagnostico_sobreajuste.csv"),
-            "correlations": read("diagnostico_correlaciones_altas.csv"),
-            "vif": read("diagnostico_vif.csv"),
-            "features": read("diagnostico_features.csv"),
-            "importance": read("diagnostico_importancia_horizonte.csv"),
-            "leakage": read("diagnostico_leakage.csv"),
-            "ablation": read("metrics_rf_ablation_m3.csv")}
+        result[key] = pd.read_csv(path) if path.exists() else pd.DataFrame()
+    return result
+
+
+@st.cache_data
+def load_manifests() -> dict[str, dict]:
+    result = {}
+    for key, name in {
+        "selected": "selected_model_manifest.json",
+        "champion": "champion_manifest.json",
+        "diagnostic": "diagnostico_manifest.json",
+    }.items():
+        path = ROOT / "outputs/evaluation" / name
+        if path.exists():
+            result[key] = json.loads(path.read_text(encoding="utf-8"))
+    return result
+
+
+@st.cache_data
+def load_rf_optimization() -> tuple[pd.DataFrame, dict]:
+    evaluation = ROOT / "outputs/evaluation"
+    results_path = evaluation / "rf_mejores_por_grupo.csv"
+    plan_path = evaluation / "rf_hardware_plan.json"
+    results = pd.read_csv(results_path) if results_path.exists() else pd.DataFrame()
+    plan = json.loads(plan_path.read_text(encoding="utf-8")) if plan_path.exists() else {}
+    return results, plan
+
+
+@st.cache_data
+def load_input_evaluation() -> tuple[pd.DataFrame, pd.DataFrame]:
+    evaluation = ROOT / "outputs/evaluation"
+    daily_path = evaluation / "predictions_entrada_diarias.csv"
+    weekly_path = evaluation / "predictions_entrada_semanales.csv"
+    if not daily_path.exists() or not weekly_path.exists():
+        return pd.DataFrame(), pd.DataFrame()
+    return pd.read_csv(daily_path, parse_dates=["fecha_origen", "fecha_objetivo"]), pd.read_csv(weekly_path, parse_dates=["fecha_origen"])
+
+
+def apply_filters(frame: pd.DataFrame, farm: str, block: str) -> pd.DataFrame:
+    result = frame
+    if farm != "Todas":
+        result = result[result["finca"].eq(farm)]
+    if block != "Todos":
+        result = result[result["bloque"].astype(str).eq(block)]
+    return result
+
+
+def weekly_summary(frame: pd.DataFrame) -> pd.DataFrame:
+    result = model_scores(frame).rename(columns={
+        "wape": "wape_semanal", "mae": "mae_semanal", "rmse": "rmse_semanal",
+        "bias_pct": "sesgo_pct", "r2": "r2_semanal",
+    })
+    if result.empty:
+        return result
+    result["desviacion_abs_pct"] = result["wape_semanal"]
+    ratios = []
+    for model_name, group in frame.groupby("modelo"):
+        real_total = group["real"].sum()
+        ratios.append({"modelo": model_name,
+                       "ratio_pred_real": group["proyectado_modelo"].sum() / real_total
+                       if real_total else np.nan})
+    ratios = pd.DataFrame(ratios)
+    result = result.merge(ratios, on="modelo", how="left")
+    result = result.drop(columns=["acierto_global"], errors="ignore")
+    result["poblacion"] = np.where(
+        result["modelo"].astype(str).str.match(r"E0[2-7]_"),
+        "RETROSPECTIVO_ORACLE_NO_CAUSAL", "CAUSAL")
+    return result
+
+
+def aggregate_bayesian_intervals(weekly: pd.DataFrame, draws: pd.DataFrame, model: str, farm: str, block: str) -> pd.DataFrame:
+    """Calcula cuantiles de sumas de draws para el filtro actual, nunca sumas de cuantiles."""
+    filtered_weekly = apply_filters(weekly[weekly.model.eq(model)], farm, block)
+    filtered_draws = apply_filters(draws[draws.model.eq(model)], farm, block)
+    if filtered_weekly.empty or filtered_draws.empty:
+        return pd.DataFrame()
+    real = filtered_weekly.groupby("semana_proyeccion", as_index=False).real.sum()
+    totals = filtered_draws.groupby(["semana_proyeccion", "draw"], as_index=False)["sample"].sum()
+    rows = []
+    for week, group in totals.groupby("semana_proyeccion"):
+        samples = group["sample"].to_numpy(float)
+        actual = float(real.loc[real.semana_proyeccion.eq(week), "real"].iloc[0])
+        rows.append({"semana_proyeccion": week, "real": actual, "pred": samples.mean(),
+                     "low80": np.quantile(samples, .1), "high80": np.quantile(samples, .9),
+                     "low95": np.quantile(samples, .025), "high95": np.quantile(samples, .975)})
+    result = pd.DataFrame(rows).sort_values("semana_proyeccion")
+    result["coverage80"] = ((result.real >= result.low80) & (result.real <= result.high80)).astype(float)
+    result["coverage95"] = ((result.real >= result.low95) & (result.real <= result.high95)).astype(float)
+    result["width80"] = result.high80 - result.low80
+    result["width95"] = result.high95 - result.low95
+    return result
 
 
 st.set_page_config(page_title="Markov Freedom", page_icon=None, layout="wide")
 st.markdown("""<style>
 .block-container {padding-top: 1.5rem;}
-[data-testid="stMetricValue"] {font-size: 1.8rem;}
-[data-testid="stMetric"] {background: #f4f7f8; border: 1px solid #dce5e8; padding: .75rem; border-radius: .65rem;}
-[data-testid="stExpander"] {border-color: #dce5e8;}
+[data-testid="stMetricValue"] {font-size: 1.65rem;}
+[data-testid="stMetric"] {background: #f4f7f8; border: 1px solid #dce5e8; padding: .65rem; border-radius: .65rem;}
 </style>""", unsafe_allow_html=True)
 st.title("Markov Freedom")
-st.caption("Centro de validación causal, diagnóstico y trazabilidad de pronósticos")
-evaluation_mode = st.sidebar.radio("Evaluación", ["Rolling origin", "Validación fija"])
-st.sidebar.info("Rolling origin es la comparación formal; la validación fija conserva el diagnóstico de selección.")
-metrics, daily, weekly, weekly_block = load_data(evaluation_mode)
-hyperparameter_results = load_hyperparameter_results()
+st.caption("Centro tecnico de validacion semanal, incertidumbre, diagnostico y trazabilidad")
 
-if daily.empty:
-    st.error("No hay predicciones trazables. Ejecute las fases 2-7 primero.")
+evaluation_mode = st.sidebar.radio("Evaluacion", ["Rolling origin", "Validacion fija"])
+weekly, daily = load_data(evaluation_mode)
+diagnostics = load_diagnostics()
+manifests = load_manifests()
+bayes = load_bayesian_weekly()
+bayes_draws = load_bayesian_draws()
+rf_best, hardware_plan = load_rf_optimization()
+if weekly.empty:
+    st.error("No hay ventanas semanales completas para esta evaluacion.")
     st.stop()
 
-models = sorted(daily.modelo.unique())
-preferred_model = ("MODELO_SELECCIONADO_ROLLING" if evaluation_mode == "Rolling origin"
-                   else "BEST_COMPOSITE")
-default_model = preferred_model if preferred_model in models else models[0]
-model = st.sidebar.selectbox("Modelo", models + ["Todos"], index=models.index(default_model))
-farms = sorted(daily.finca.unique())
+models = sorted(weekly["modelo"].unique())
+preferred = "MODELO_SELECCIONADO_ROLLING" if evaluation_mode == "Rolling origin" else "E00_M3_BASE"
+model = st.sidebar.selectbox("Modelo", models, index=models.index(preferred) if preferred in models else 0)
+farms = sorted(weekly["finca"].dropna().unique())
 farm = st.sidebar.selectbox("Finca", ["Todas"] + farms)
-blocks = sorted(daily.loc[daily.finca.eq(farm), "bloque"].dropna().unique()) if farm != "Todas" else []
-block = st.sidebar.selectbox("Bloque", ["Todos"] + blocks, disabled=farm == "Todas")
-horizons = sorted(daily.horizonte_dia.dropna().unique()) if "horizonte_dia" in daily else []
-horizon = st.sidebar.selectbox("Horizonte", ["Todos"] + horizons)
-filtered = daily.copy()
-if model != "Todos": filtered = filtered[filtered.modelo.eq(model)]
-if farm != "Todas": filtered = filtered[filtered.finca.eq(farm)]
-if block != "Todos": filtered = filtered[filtered.bloque.eq(block)]
-if horizon != "Todos": filtered = filtered[filtered.horizonte_dia.eq(horizon)]
+available_blocks = weekly if farm == "Todas" else weekly[weekly["finca"].eq(farm)]
+blocks = sorted(available_blocks["bloque"].dropna().astype(str).unique())
+block = st.sidebar.selectbox("Bloque", ["Todos"] + blocks, disabled=not blocks)
 
-# La validación compara únicamente ventanas completas, igual que las métricas
-# semanales. Las pendientes y parciales se conservan en la tabla de detalle.
-selected_weekly = aggregate_weekly(filtered, by_block=block != "Todos")
-evaluation_split = "ROLLING" if evaluation_mode == "Rolling origin" else "VALIDATION"
-validation_weekly = selected_weekly[selected_weekly.split.eq(evaluation_split)]
-filtered = complete_validation_daily(filtered[filtered.split.eq(evaluation_split)], validation_weekly)
+filtered_weekly = apply_filters(weekly, farm, block)
+model_weekly = filtered_weekly[filtered_weekly["modelo"].eq(model)].copy()
+if model_weekly.empty:
+    st.warning("No hay ventanas para los filtros seleccionados.")
+    st.stop()
 
-denom = filtered.real.abs().sum()
-wape = filtered.error_abs.sum() / denom if denom else float("nan")
-accuracy = (1 - (filtered.real.sum() - filtered.proyectado_modelo.sum()) / filtered.real.sum()) if filtered.real.sum() else float("nan")
-r2 = calculate_metrics(filtered.real, filtered.proyectado_modelo)["r2"]
-weeks_observed = validation_weekly[validation_weekly.estado_ventana.eq("VALIDA")]
-weeks_valid = weeks_observed
-weeks_partial = validation_weekly[validation_weekly.estado_ventana.eq("PARCIAL")]
-hits = int(weeks_observed.acierto_pct.between(.93, 1.07, inclusive="both").sum())
-near = int((weeks_observed.acierto_pct.between(.90, .93, inclusive="left") | weeks_observed.acierto_pct.between(1.07, 1.10, inclusive="right")).sum())
-miss = int(len(weeks_observed) - hits - near)
-pending = int(validation_weekly.estado_ventana.eq("PENDIENTE_REAL").sum())
-partial = int(validation_weekly.estado_ventana.eq("PARCIAL").sum())
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("WAPE", f"{wape:.2%}" if pd.notna(wape) else "N.A.")
-c2.metric("Acierto relativo medio", f"{accuracy:.2%}" if pd.notna(accuracy) else "N.A.")
-c3.metric("MAE", f"{filtered.error_abs.mean():,.0f}" if len(filtered) else "N.A.")
-c4.metric("R²", f"{r2:.3f}" if pd.notna(r2) else "N.A.", help="Coeficiente calculado sobre las filas filtradas. Puede ser negativo.")
-c5.metric("Finca-semanas acertadas", f"{hits} / {len(weeks_observed)}")
-c5, c6, c7 = st.columns(3)
-c5.metric("Cercanas", near); c6.metric("No acertadas", miss); c7.metric("Pendientes / parciales", f"{pending} / {len(weeks_partial)}")
-st.caption("WAPE, MAE, R² y los gráficos de validación usan únicamente ventanas finca-semana completas. Las pendientes y parciales no se incluyen.")
+score = model_scores(model_weekly).iloc[0]
+weekly_wape = float(score["wape"])
+sesgo = float(score["bias_pct"])
+summary = weekly_summary(filtered_weekly)
+operational = operational_weekly_selected(daily, by_block=block != "Todos")
+operational = apply_filters(operational, farm, block)
+c1, c2, c3, c4, c5, c6 = st.columns(6)
+c1.metric("WAPE semanal", _pct(weekly_wape))
+c2.metric("Sesgo porcentual", _pct(sesgo, signed=True), help="Positivo sobreestima; negativo subestima; 0% es exacto.")
+c3.metric("MAE semanal", f"{score['mae']:,.0f}")
+c4.metric("RMSE semanal", f"{score['rmse']:,.0f}")
+c5.metric("R2 semanal", f"{score['r2']:.3f}" if pd.notna(score["r2"]) else "N.A.")
+c6.metric("Ventanas", f"{len(model_weekly):,}")
+st.caption(f"{model}: {len(model_weekly)} ventanas bloque-origen completas; split {model_weekly['split'].iloc[0]}.")
+if evaluation_mode == "Validacion fija" and weekly["modelo"].astype(str).str.match(r"E0[2-7]_").any():
+    st.warning("Los modelos E02-E07 usan informacion P32 retrospectiva y no son causales. Se muestran para auditoria, pero no deben compararse como champion causal.")
 
-st.subheader("Proyectado contra real")
-chart_with_week = (filtered.groupby(["fecha_objetivo", "semana_label"], as_index=False)
-                   [["real", "proyectado_modelo"]].sum(min_count=1).sort_values("fecha_objetivo"))
-chart_for_display = chart_with_week.melt(
-    id_vars=["fecha_objetivo", "semana_label"], var_name="serie", value_name="valor")
-daily_chart = alt.Chart(chart_for_display).mark_line().encode(
-    x=alt.X("fecha_objetivo:T", title="Día"),
-    y=alt.Y("valor:Q", title="Cantidad"),
-    color=alt.Color("serie:N", title=None),
-    tooltip=[
-        alt.Tooltip("fecha_objetivo:T", title="Día", format="%a %d %b %Y"),
-        alt.Tooltip("semana_label:N", title="Semana"),
-        alt.Tooltip("serie:N", title="Serie"),
-        alt.Tooltip("valor:Q", title="Valor", format=",.0f"),
-    ],
-).properties(height=320)
-st.altair_chart(daily_chart, use_container_width=True)
-st.caption("El eje muestra el día; al pasar el cursor se muestran también el día y la semana en formato YYYYWW.")
-chart = (chart_with_week.groupby("fecha_objetivo", as_index=True)
-         [["real", "proyectado_modelo"]].sum(min_count=1)
-         .rename(columns={"proyectado_modelo": "proyectado"}))
-residual = (chart["proyectado"] - chart["real"]).rename("residuo").dropna()
-st.subheader("Residuo diario: picos y valles")
-st.bar_chart(residual, height=180)
-worst = (filtered.assign(residuo=filtered.proyectado_modelo - filtered.real)
-         .dropna(subset=["real"])
-         .assign(error_abs=lambda x: x.residuo.abs())
-         .sort_values("error_abs", ascending=False)
-         [["fecha_objetivo", "finca", "bloque", "horizonte_dia", "real", "proyectado_modelo", "residuo"]]
-         .head(10))
-st.caption("H1-H7 es la posición del día dentro de la ventana semanal. Se grafican valores sin redondear y se agregan solo los bloques de la selección.")
-with st.expander("Mayores errores diarios"):
-    st.dataframe(worst, use_container_width=True, hide_index=True)
+with st.expander("Definiciones y lectura metodologica"):
+    st.markdown("""
+    - **WAPE:** suma de errores absolutos dividida por la suma de reales.
+    - **Sesgo porcentual:** suma de errores firmados dividida por la suma de reales absolutos.
+    - **MAE/RMSE:** error absoluto y raiz del error cuadratico sobre totales semanales.
+    - **R2:** variabilidad explicada frente a la media de los reales; puede ser negativo.
+    - Las ventanas son completas H1-H7 y se mantienen separadas por finca, bloque, origen y semana.
+    """)
 
-st.subheader("Pronostico semanal: validacion")
-weekly_view = selected_weekly
-complete_weeks = weekly_view[weekly_view.estado_ventana.eq("VALIDA")]
-if len(complete_weeks):
-    weekly_scores = calculate_metrics(complete_weeks.real, complete_weeks.proyectado_modelo)
-    w1, w2, w3, w4 = st.columns(4)
-    weekly_wape = (complete_weeks.proyectado_modelo - complete_weeks.real).abs().sum() / complete_weeks.real.abs().sum()
-    w1.metric("WAPE semanal", f"{weekly_wape:.2%}")
-    w2.metric("R² semanal", f"{weekly_scores['r2']:.3f}")
-    w3.metric("MAE semanal", f"{weekly_scores['mae']:,.0f}")
-    w4.metric("Semanas calendario completas", complete_weeks.semana_proyeccion.nunique())
-    st.caption(f"Combinaciones finca-semana completas: {len(complete_weeks)}")
-weekly_chart = (complete_weeks.groupby(["semana_proyeccion", "semana_label"], as_index=True)
-                [["real", "proyectado_modelo"]].sum(min_count=1).sort_index())
-weekly_chart.index = weekly_chart.index.get_level_values("semana_label")
-weekly_chart = weekly_chart.rename(columns={"proyectado_modelo": "proyectado"})
-st.line_chart(weekly_chart, height=320)
+tab_summary, tab_input, tab_rf, tab_bayes, tab_overfit, tab_features, tab_corr, tab_trace = st.tabs([
+    "Resumen semanal", "Nueva entrada", "RF optimizados", "Intervalos Bayes", "Sobreajuste", "Variables y rezagos", "Correlacion y VIF", "Trazabilidad"
+])
 
-left, right = st.columns(2)
-with left:
-    st.subheader("Acierto semanal por finca")
-    week = selected_weekly
-    st.caption("Se muestran todas las semanas de TRAIN y VALIDATION; el split identifica cada fila.")
-    table_cols = ["modelo", "split", "finca"] + (["bloque"] if "bloque" in week else []) + [
-        "semana_label", "fecha_origen", "real", "proyectado", "proyectado_total",
-        "acierto_pct", "estado_ventana", "estado"]
-    st.dataframe(week[table_cols].sort_values("fecha_origen"), use_container_width=True, hide_index=True)
-with right:
-    st.subheader("Ranking primario")
-    ranking = metrics[metrics.comparacion_primaria].sort_values("wape").drop_duplicates("experiment_id")
-    st.dataframe(ranking[["experiment_id", "wape", "mae", "rmse", "r2", "bias_pct", "n"]],
-                 use_container_width=True, hide_index=True)
-    if not hyperparameter_results.empty:
-        st.subheader("Ranking exploratorio semanal")
-        weekly_ranking = hyperparameter_results.sort_values("weekly_wape").head(10)
-        st.dataframe(weekly_ranking[["model", "features", "weekly_wape", "weekly_r2",
-                                     "weekly_mae", "weekly_rmse", "weekly_bias_pct",
-                                     "selection_score"]], use_container_width=True, hide_index=True)
-
-if not hyperparameter_results.empty:
-    default_hyper = hyperparameter_results.sort_values("weekly_wape").iloc[0]["model"]
-    hyper_models = hyperparameter_results["model"].tolist()
-    selected_hyper_model = st.selectbox("Modelo de hiperparametros", hyper_models,
-                                        index=hyper_models.index(default_hyper))
-    selected_hyper = hyperparameter_results[
-        hyperparameter_results.model.eq(selected_hyper_model)].iloc[0]
-    st.subheader("Detalle del modelo seleccionado de hiperparametros")
-    st.caption(f"Seleccionado por: {selected_hyper_model}; validacion fija. No sustituye el ranking formal de Fase 8.")
-    info_cols = st.columns(6)
-    info_cols[0].metric("Modelo", str(selected_hyper["model"]))
-    info_cols[1].metric("Variables", str(selected_hyper["features"]))
-    info_cols[2].metric("WAPE diario", f"{selected_hyper['daily_wape']:.2%}")
-    info_cols[3].metric("R2 diario", f"{selected_hyper['daily_r2']:.3f}")
-    info_cols[4].metric("WAPE semanal", f"{selected_hyper['weekly_wape']:.2%}")
-    info_cols[5].metric("R2 semanal", f"{selected_hyper['weekly_r2']:.3f}")
-    parameters = json.loads(selected_hyper["hyperparameters"])
-    parameters = pd.DataFrame([{"parametro": key, "valor": value}
-                               for key, value in parameters.items()])
-    st.dataframe(parameters, use_container_width=True, hide_index=True)
-
-st.subheader("Variables de entrada y diagnóstico")
-inputs = load_model_inputs()
-diagnostics = load_diagnostics()
-if inputs.empty:
-    st.info("No existe el dataframe supervisado. Ejecute fase6_supervisado.py.")
-else:
-    input_tab, comparison_tab, health_tab, collinearity_tab, quality_tab = st.tabs([
-        "Variables de entrada", "RF con / sin M3", "Sobreajuste", "Colinealidad", "Calidad y explicación"])
-    with input_tab:
-        input_weeks = sorted(inputs.semana_proyeccion.dropna().unique())
-        selected_input_week = st.selectbox("Semana de origen / proyección", ["Todas"] + input_weeks,
-                                           key="input_week")
-        input_view = inputs.copy()
-        if selected_input_week != "Todas":
-            input_view = input_view[input_view.semana_proyeccion.eq(selected_input_week)]
-        if farm != "Todas":
-            input_view = input_view[input_view.finca.eq(farm)]
-        if block != "Todos":
-            input_view = input_view[input_view.bloque.eq(block)]
-        if horizon != "Todos":
-            input_view = input_view[input_view.horizonte_dia.eq(horizon)]
-        st.caption("target es el corte real observado y no es una variable de entrada.")
-        st.download_button("Descargar variables de entrada CSV", input_view.to_csv(index=False),
-                           "variables_entrada_rf.csv", "text/csv", key="download_inputs")
-        st.dataframe(input_view, use_container_width=True, hide_index=True)
-
-    with comparison_tab:
-        ablation = diagnostics["ablation"]
-        if ablation.empty:
-            st.info("Ejecute ablation_rf_m3.py para generar la comparación.")
-        else:
-            base = metrics[(metrics.experiment_id == "RF_H1_H7_FENO") & metrics.split.eq("VALIDATION")]
-            no_m3 = ablation[(ablation.experiment_id == "RF_H1_H7_FENO_SIN_M3") &
-                             ablation.horizonte.astype(str).eq("TODOS")]
-            comparison = pd.DataFrame([
-                {"modelo": "RF H1-H7 con M3", "wape": base.wape.iloc[0] if len(base) else np.nan},
-                {"modelo": "RF H1-H7 sin M3", "wape": no_m3.wape.iloc[0] if len(no_m3) else np.nan},
-                {"modelo": "M3 baseline", "wape": metrics.loc[metrics.experiment_id.eq("E00_M3_BASE"), "wape"].iloc[0]
-                 if metrics.experiment_id.eq("E00_M3_BASE").any() else np.nan},
-            ])
-            chart = alt.Chart(comparison).mark_bar().encode(
-                x=alt.X("wape:Q", title="WAPE", axis=alt.Axis(format=".0%")),
-                y=alt.Y("modelo:N", sort="-x", title=None),
-                color=alt.Color("modelo:N", legend=None),
-                tooltip=["modelo", alt.Tooltip("wape:Q", format=".2%")],
-            ).properties(height=220)
-            st.altair_chart(chart, use_container_width=True)
-            horizon_days = int(load_config(ROOT / "config/pipeline.yaml")["forecast"]["horizon_days"])
-            no_m3_rows = ablation[ablation.horizonte.astype(str).isin(
-                [str(i) for i in range(1, horizon_days + 1)])]
-            with st.expander("Comparación por horizonte"):
-                st.dataframe(no_m3_rows, use_container_width=True, hide_index=True)
-            st.caption("Esta comparación usa el mismo split temporal y los mismos hiperparámetros. La variante sin M3 fue reentrenada, no simulada eliminando columnas.")
-
-    if diagnostics["overfit"].empty:
-        st.info("Ejecute diagnostico_modelos.py para cargar sobreajuste, colinealidad y leakage.")
+with tab_input:
+    st.subheader("Evaluacion del archivo de entrada")
+    input_path = ROOT / "resultados acutuales/conteos_vs_cortes_multifinca.xlsx"
+    input_daily, input_weekly = load_input_evaluation()
+    if st.button("Ejecutar evaluacion de la entrada", disabled=not input_path.exists()):
+        with st.spinner("Generando proyecciones causales para todos los modelos..."):
+            evaluate_input(ROOT, input_path)
+        load_input_evaluation.clear()
+        st.rerun()
+    if input_weekly.empty:
+        st.info("Aun no existe una evaluacion para la entrada. Use el boton para generarla.")
     else:
-        with health_tab:
-            overfit = diagnostics["overfit"]
-            validation = overfit[overfit.scope.eq("VALIDATION")]
-            high_risk = int(validation.riesgo_sobreajuste.eq("ALTO").sum())
-            medium_risk = int(validation.riesgo_sobreajuste.eq("MEDIO").sum())
-            h1, h2, h3 = st.columns(3)
-            h1.metric("Horizontes alto riesgo", high_risk)
-            h2.metric("Horizontes riesgo medio", medium_risk)
-            h3.metric("Mayor gap WAPE", f"{validation.gap_wape.max():.1%}")
-            plot = overfit.copy()
-            plot["horizonte_label"] = "H" + plot.horizonte.astype(str)
-            chart = alt.Chart(plot).mark_bar().encode(
-                x=alt.X("horizonte_label:N", title="Horizonte"),
-                y=alt.Y("wape:Q", title="WAPE", axis=alt.Axis(format=".0%")),
-                color=alt.Color("scope:N", title="Muestra"),
-                tooltip=["horizonte_label", "scope", alt.Tooltip("wape:Q", format=".2%"),
-                         alt.Tooltip("r2:Q", format=".3f"), "riesgo_sobreajuste"],
-            ).properties(height=300)
-            st.altair_chart(chart, use_container_width=True)
-            gap_chart = alt.Chart(validation).mark_bar().encode(
-                x=alt.X("horizonte:N", title="Horizonte"),
-                y=alt.Y("gap_wape:Q", title="Gap WAPE", axis=alt.Axis(format=".0%")),
-                color=alt.Color("riesgo_sobreajuste:N", scale=alt.Scale(
-                    domain=["BAJO", "MEDIO", "ALTO"], range=["#2e8b57", "#d99b23", "#c94c4c"]),
-                    title="Riesgo"),
-                tooltip=["horizonte", alt.Tooltip("gap_wape:Q", format=".2%"), "riesgo_sobreajuste"],
-            ).properties(height=220)
-            st.altair_chart(gap_chart, use_container_width=True)
-            st.caption("El gap se interpreta junto con el tamaño de muestra y el comportamiento temporal; no constituye una prueba aislada de sobreajuste.")
-            with st.expander("Detalle numérico train-validation"):
-                st.dataframe(overfit, use_container_width=True, hide_index=True)
-        with collinearity_tab:
-            st.caption("La colinealidad no invalida un Random Forest, pero sí puede repartir la importancia entre variables redundantes.")
-            vif = diagnostics["vif"].head(15).sort_values("vif")
-            vif_chart = alt.Chart(vif).mark_bar().encode(
-                x=alt.X("vif:Q", title="VIF", scale=alt.Scale(type="log")),
-                # Una escala logarítmica no admite el cero que usaría por defecto
-                # una barra; VIF=1 es la base natural del diagnóstico.
-                x2=alt.X2(datum=1),
-                y=alt.Y("variable:N", sort="-x", title=None),
-                color=alt.Color("riesgo:N", scale=alt.Scale(
-                    domain=["BAJO", "MEDIO", "ALTO"], range=["#2e8b57", "#d99b23", "#c94c4c"]), title="Riesgo"),
-                tooltip=["variable", "vif", "riesgo"],
-            ).properties(height=420)
-            st.altair_chart(vif_chart, use_container_width=True)
-            top_variables = vif.variable.tolist()[:12]
-            corr_values = inputs[top_variables].corr().reindex(
-                index=top_variables, columns=top_variables)
-            corr_array = np.array(corr_values, dtype=float, copy=True)
-            np.fill_diagonal(corr_array, 1.0)
-            corr_values = pd.DataFrame(
-                corr_array, index=top_variables, columns=top_variables)
-            # La diagonal representa cada variable consigo misma y debe ser
-            # exactamente 1, incluso con columnas casi constantes o redondeos.
-            corr = (corr_values.rename_axis("variable_1").reset_index()
-                    .melt(id_vars="variable_1", var_name="variable_2",
-                          value_name="correlacion"))
-            heatmap = alt.Chart(corr).mark_rect().encode(
-                x=alt.X("variable_2:N", title=None, sort=top_variables),
-                y=alt.Y("variable_1:N", title=None, sort=top_variables),
-                color=alt.Color("correlacion:Q", scale=alt.Scale(domain=[-1, 1], scheme="redblue"),
-                                 title="r"),
-                tooltip=["variable_1", "variable_2", alt.Tooltip("correlacion:Q", format=".3f")],
-            ).properties(height=420)
-            st.altair_chart(heatmap, use_container_width=True)
-            with st.expander("Detalle de pares correlacionados"):
-                st.dataframe(diagnostics["correlations"].head(50), use_container_width=True, hide_index=True)
-        with quality_tab:
-            features = diagnostics["features"].copy()
-            top_missing = features.sort_values("faltantes_pct", ascending=False).head(15)
-            missing_chart = alt.Chart(top_missing).mark_bar().encode(
-                x=alt.X("faltantes_pct:Q", title="Faltantes", axis=alt.Axis(format=".0%")),
-                y=alt.Y("variable:N", sort="-x", title=None),
-                color=alt.Color("faltantes_pct:Q", scale=alt.Scale(scheme="yelloworangered"), title="%"),
-                tooltip=["variable", alt.Tooltip("faltantes_pct:Q", format=".2%"), "unicos"],
-            ).properties(height=360)
-            st.altair_chart(missing_chart, use_container_width=True)
-            if not diagnostics["importance"].empty:
-                selected_importance = diagnostics["importance"]
-                if horizon != "Todos":
-                    selected_importance = selected_importance[selected_importance.horizonte.eq(horizon)]
-                selected_importance = selected_importance.head(20).sort_values("importance")
-                importance_chart = alt.Chart(selected_importance).mark_bar().encode(
-                    x=alt.X("importance:Q", title="Importancia estructural"),
-                    y=alt.Y("variable:N", sort="-x", title=None),
-                    color=alt.Color("horizonte:N", title="Horizonte"),
-                    tooltip=["variable", "horizonte", "importance"],
-                ).properties(height=420)
-                st.altair_chart(importance_chart, use_container_width=True)
-            leakage = diagnostics["leakage"]
-            leakage_ok = leakage.resultado.eq("OK").all()
-            st.success("Auditoría básica de leakage: OK") if leakage_ok else st.error("Auditoría básica de leakage: revisar")
-            with st.expander("Detalle de calidad y leakage"):
-                st.dataframe(features, use_container_width=True, hide_index=True)
-                st.dataframe(leakage, use_container_width=True, hide_index=True)
+        input_models = sorted(input_weekly.modelo.unique())
+        input_model = st.selectbox("Modelo de entrada", input_models, key="input_model")
+        input_farms = sorted(input_weekly.finca.unique())
+        input_farm = st.selectbox("Finca de entrada", ["Todas"] + input_farms, key="input_farm")
+        granularity = st.radio("Granularidad", ["Finca + semana", "Finca + bloque + semana"], horizontal=True)
+        data = input_weekly[input_weekly.modelo.eq(input_model)].copy()
+        if input_farm != "Todas":
+            data = data[data.finca.eq(input_farm)]
+        if granularity == "Finca + semana":
+            data = (data.groupby(["modelo", "finca", "semana_proyeccion"], as_index=False)
+                    .agg(real=("real", "sum"), proyectado=("proyectado", "sum"), dias=("dias", "sum")))
+            data["diferencia"] = data.proyectado - data.real
+            data["error_abs"] = data.diferencia.abs()
+            data["razon_proyectado_real"] = np.where(data.real.ne(0), data.proyectado / data.real, np.nan)
+            data["desviacion_pct"] = data.razon_proyectado_real - 1
+            data["indicador"] = data.razon_proyectado_real.map(weekly_status)
+        else:
+            data = data.sort_values(["finca", "bloque", "semana_proyeccion"])
+        st.caption("La semana corresponde a la ventana objetivo lunes-domingo posterior al ultimo conteo semanal.")
+        display = data[[c for c in ["modelo", "finca", "bloque", "semana_proyeccion", "real", "proyectado",
+                                    "diferencia", "error_abs", "razon_proyectado_real", "desviacion_pct", "indicador"] if c in data]]
+        styled = display.style.applymap(
+            lambda value: "background-color: #c6efce" if value == "ACIERTO" else
+            ("background-color: #ffeb9c" if value == "CERCA" else
+             ("background-color: #ffc7ce" if value == "NO ACIERTO" else "")), subset=["indicador"])
+        st.dataframe(styled, width="stretch", hide_index=True,
+                     column_config={"real": st.column_config.NumberColumn("Real", format="%,.0f"),
+                                    "proyectado": st.column_config.NumberColumn("Proyectado", format="%,.0f"),
+                                    "razon_proyectado_real": st.column_config.NumberColumn("Proyectado / real", format="0.0%"),
+                                    "desviacion_pct": st.column_config.NumberColumn("Desviacion", format="+0.0%;-0.0%")})
+        st.download_button("Descargar evaluacion semanal CSV", display.to_csv(index=False),
+                           "evaluacion_entrada_semanal.csv", "text/csv")
+        st.download_button("Descargar detalle diario CSV", input_daily[input_daily.modelo.eq(input_model)].to_csv(index=False),
+                           "evaluacion_entrada_diaria.csv", "text/csv")
+        xlsx_path = ROOT / "outputs/evaluation/evaluacion_entrada.xlsx"
+        if xlsx_path.exists():
+            st.download_button("Descargar evaluacion Excel", xlsx_path.read_bytes(),
+                               "evaluacion_entrada.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.subheader("Detalle diario")
-st.download_button("Descargar detalle filtrado CSV", filtered.to_csv(index=False), "detalle_modelos.csv", "text/csv")
-if st.checkbox("Mostrar detalle diario", value=False):
-    st.dataframe(filtered.sort_values("fecha_objetivo"), use_container_width=True, hide_index=True)
+with tab_summary:
+    weekly_by_iso = (model_weekly.groupby("semana_proyeccion", as_index=False)
+                     [["real", "proyectado_modelo"]].sum(min_count=1)
+                     .melt("semana_proyeccion", var_name="serie", value_name="cantidad"))
+    st.subheader("Pronostico semanal contra real")
+    chart = alt.Chart(weekly_by_iso).mark_line(point=True).encode(
+        x=alt.X("semana_proyeccion:O", title="Semana ISO"),
+        y=alt.Y("cantidad:Q", title="Cantidad semanal"),
+        color=alt.Color("serie:N", title=None),
+        tooltip=["semana_proyeccion", "serie", alt.Tooltip("cantidad:Q", format=",.0f")],
+    ).properties(height=340)
+    st.altair_chart(chart, width="stretch")
+    st.subheader("Comparacion semanal por modelo")
+    st.dataframe(summary.sort_values("wape_semanal"), width="stretch", hide_index=True)
+    comparison_chart = alt.Chart(summary).mark_bar().encode(
+        x=alt.X("wape_semanal:Q", title="WAPE semanal", axis=alt.Axis(format=".0%")),
+        y=alt.Y("modelo:N", sort="-x", title=None,
+                axis=alt.Axis(labelOverlap=False, labelLimit=320)),
+        color=alt.condition(alt.datum.modelo == model, alt.value("#1565c0"), alt.value("#90caf9")),
+        tooltip=["modelo", "ventanas", alt.Tooltip("wape_semanal:Q", format=".2%"),
+                 alt.Tooltip("sesgo_pct:Q", format="+.2%"), alt.Tooltip("r2_semanal:Q", format=".3f")],
+    ).properties(height=max(320, len(summary) * 32))
+    st.altair_chart(comparison_chart, width="stretch")
+    st.subheader("Resumen de indicadores operativos")
+    st.caption("Origen seleccionado: fecha más cercana al lunes de la semana proyectada. "
+               "ACIERTO: 93%-107%; CERCA: 90%-<93% o >107%-110%; NO ACIERTO: fuera de esos rangos.")
+    hit_summary = operational_summary(operational)
+    st.dataframe(hit_summary, width="stretch", hide_index=True,
+                 column_config={
+                     "pct_acierto": st.column_config.NumberColumn("% acierto", format="0.0%"),
+                     "pct_acierto_o_cerca": st.column_config.NumberColumn("% acierto o cerca", format="0.0%"),
+                 })
 
-st.info("Acierto = 1 - (real - proyectado) / real. Para real=0 se reporta N.A. Las métricas de modelos sin predicciones trazables no se inventan.")
+    operational_level = "finca + bloque + semana" if block != "Todos" else "finca + semana"
+    st.subheader(f"Semanas de validacion operativa: {model}")
+    st.caption(f"Nivel mostrado: {operational_level}. Selecciona un bloque para segmentar el resultado.")
+    operational_model = operational[operational["modelo"].eq(model)]
+    detail_sort_columns = ["semana_proyeccion", "finca"]
+    if "bloque" in operational_model.columns:
+        detail_sort_columns.append("bloque")
+    if "fecha_origen" in operational_model.columns:
+        detail_sort_columns.append("fecha_origen")
+    detail = operational_model.sort_values(detail_sort_columns)
+    detail_columns = ["modelo", "split", "finca", "bloque", "semana_proyeccion",
+                      "fecha_origen_seleccionada", "inicio_semana", "distancia_inicio_dias",
+                      "real", "proyectado_modelo", "diferencia", "diferencia_abs",
+                      "ratio_proyectado_real", "desviacion_pct", "indicador"]
+    detail_view = detail[[column for column in detail_columns if column in detail]]
+    st.dataframe(detail_view, width="stretch", hide_index=True,
+                 column_config={
+                     "real": st.column_config.NumberColumn("Real", format="%,.0f"),
+                     "proyectado_modelo": st.column_config.NumberColumn("Proyectado", format="%,.0f"),
+                     "diferencia": st.column_config.NumberColumn("Diferencia", format="%,.0f"),
+                     "diferencia_abs": st.column_config.NumberColumn("Error absoluto", format="%,.0f"),
+                     "ratio_proyectado_real": st.column_config.NumberColumn("Proyectado / real", format="0.0%"),
+                     "desviacion_pct": st.column_config.NumberColumn("Desviacion", format="+0.0%;-0.0%"),
+                 })
+    with st.expander("Resumen agrupado por finca y semana"):
+        audit_daily = daily.copy()
+        if farm != "Todas":
+            audit_daily = audit_daily[audit_daily["finca"].eq(farm)]
+        if block != "Todos":
+            audit_daily = audit_daily[audit_daily["bloque"].astype(str).eq(block)]
+        audit = operational_weekly_selected(audit_daily, by_block=False)
+        audit = audit[audit["modelo"].eq(model)].sort_values(["semana_proyeccion", "finca"])
+        audit_columns = ["modelo", "split", "finca", "semana_proyeccion",
+                         "fecha_origen_seleccionada", "inicio_semana", "real",
+                         "proyectado_modelo", "diferencia", "diferencia_abs",
+                         "ratio_proyectado_real", "desviacion_pct", "indicador"]
+        audit_view = audit[[column for column in audit_columns if column in audit]]
+        st.caption("Resumen global por finca y semana. La fecha de origen seleccionada mantiene la trazabilidad del cálculo.")
+        st.dataframe(audit_view, width="stretch", hide_index=True)
+    st.download_button("Descargar metricas semanales CSV", summary.to_csv(index=False),
+                       "metricas_semanales_modelos.csv", "text/csv")
+    st.download_button("Descargar detalle de semanas CSV", detail_view.to_csv(index=False),
+                       "detalle_semanal_operativo.csv", "text/csv")
+
+with tab_rf:
+    st.subheader("Mejor Random Forest por grupo de variables")
+    st.caption("Resultados sobre SELECTION temporal. Sirven para seleccionar hiperparametros; el ranking formal se valida luego con rolling origin.")
+    if rf_best.empty:
+        st.info("No existe la busqueda optimizada. Ejecute evaluacion_hyperparametros.py.")
+    else:
+        rf_cols = [c for c in ["features", "model", "n_estimators", "max_depth", "min_samples_leaf",
+                               "min_samples_split", "max_features", "criterion", "weekly_wape", "weekly_mae",
+                               "weekly_rmse", "weekly_bias_pct", "weekly_r2", "daily_wape", "selection_score"] if c in rf_best]
+        st.dataframe(rf_best[rf_cols].sort_values("weekly_wape"), width="stretch", hide_index=True)
+        rf_chart = alt.Chart(rf_best).mark_bar().encode(
+            x=alt.X("weekly_wape:Q", title="WAPE semanal en SELECTION", axis=alt.Axis(format=".0%")),
+            y=alt.Y("features:N", sort="-x", title="Grupo de variables"),
+            color=alt.Color("features:N", legend=None),
+            tooltip=["model", "features", alt.Tooltip("weekly_wape:Q", format=".2%"),
+                     alt.Tooltip("weekly_r2:Q", format=".3f"), alt.Tooltip("weekly_bias_pct:Q", format="+.2%")]
+        ).properties(height=260)
+        st.altair_chart(rf_chart, width="stretch")
+        group = st.selectbox("Grupo RF para contraste", sorted(rf_best.features.unique()))
+        selected_rf = rf_best[rf_best.features.eq(group)].iloc[0]
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("WAPE semanal", _pct(selected_rf.weekly_wape))
+        r2.metric("R2 semanal", f"{selected_rf.weekly_r2:.3f}")
+        r3.metric("Sesgo semanal", _pct(selected_rf.weekly_bias_pct, signed=True))
+        r4.metric("WAPE diario", _pct(selected_rf.daily_wape))
+        st.code(str(selected_rf.model), language=None)
+    if hardware_plan:
+        st.subheader("Plan de computo de la ultima busqueda")
+        st.json(hardware_plan)
+
+with tab_bayes:
+    if evaluation_mode == "Rolling origin":
+        st.info("Los intervalos bayesianos disponibles corresponden a validacion fija; no se mezclan con el ranking rolling.")
+    elif bayes.empty:
+        st.info("No existen predicciones bayesianas con intervalos.")
+    else:
+        bayes_filtered = apply_filters(bayes, farm, block)
+        bayes_models = sorted(bayes_filtered.model.unique())
+        bayes_model = st.selectbox("Modelo bayesiano", bayes_models)
+        bayes_model_data = aggregate_bayesian_intervals(bayes, bayes_draws, bayes_model, farm, block)
+        if bayes_model_data.empty:
+            st.info("No hay draws posteriores para los filtros seleccionados. Ejecute fase7_bayes.py.")
+            st.stop()
+        coverage = bayes_model_data[["coverage80", "coverage95", "width80", "width95"]].mean()
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("Cobertura 80%", _pct(coverage.coverage80))
+        b2.metric("Cobertura 95%", _pct(coverage.coverage95))
+        b3.metric("Ancho medio 80%", f"{coverage.width80:,.0f}")
+        b4.metric("Ancho medio 95%", f"{coverage.width95:,.0f}")
+        st.caption("Cobertura nominal: 80% y 95%. La cobertura observada debe aproximarse a esos valores.")
+        base = alt.Chart(bayes_model_data).encode(x=alt.X("semana_proyeccion:O", title="Semana ISO"))
+        band95 = base.mark_area(opacity=.18, color="#90caf9").encode(y="low95:Q", y2="high95:Q")
+        band80 = base.mark_area(opacity=.30, color="#1565c0").encode(y="low80:Q", y2="high80:Q")
+        lines = base.transform_fold(["real", "pred"], as_=["serie", "cantidad"]).mark_line(point=True).encode(
+            y=alt.Y("cantidad:Q", title="Cantidad semanal"), color=alt.Color("serie:N", scale=alt.Scale(range=["#2e7d32", "#111827"])),
+            tooltip=["semana_proyeccion", alt.Tooltip("serie:N"), alt.Tooltip("cantidad:Q", format=",.0f")])
+        bands_chart = alt.layer(band95, band80, lines).properties(height=360)
+        st.altair_chart(bands_chart, width="stretch")
+        st.caption("Bandas calculadas desde sumas de draws posteriores para los filtros activos; no se suman cuantiles diarios.")
+        bayes_cols = [c for c in ["experiment_id", "coverage_interval_80", "coverage_interval_95",
+                                  "ancho_medio_intervalo", "wape", "mae", "rmse", "bias_pct", "r2", "n"]
+                       if c in diagnostics["bayes_metrics"]]
+        st.dataframe(diagnostics["bayes_metrics"][bayes_cols], width="stretch", hide_index=True)
+
+with tab_overfit:
+    overfit = diagnostics["overfit"]
+    if overfit.empty:
+        st.info("No existe diagnostico de sobreajuste.")
+    else:
+        current = overfit[overfit.modelo.eq("RF_H1_H7_FENO")]
+        st.dataframe(current, width="stretch", hide_index=True)
+        chart = alt.Chart(current).mark_line(point=True).encode(
+            x=alt.X("horizonte:O", title="Horizonte"), y=alt.Y("wape:Q", title="WAPE", axis=alt.Axis(format=".0%")),
+            color=alt.Color("scope:N", title="Muestra"), tooltip=["horizonte", "scope", "wape", "r2", "riesgo_sobreajuste"]
+        ).properties(height=320)
+        st.altair_chart(chart, width="stretch")
+        gap = current.drop_duplicates("horizonte")
+        gap_chart = alt.Chart(gap).mark_bar().encode(
+            x=alt.X("horizonte:O", title="Horizonte"), y=alt.Y("gap_wape:Q", title="Gap WAPE", axis=alt.Axis(format=".0%")),
+            color=alt.Color("riesgo_sobreajuste:N"), tooltip=["horizonte", "gap_wape", "riesgo_sobreajuste"]
+        ).properties(height=260)
+        st.altair_chart(gap_chart, width="stretch")
+
+with tab_features:
+    importance = diagnostics["importance"]
+    if not importance.empty:
+        st.subheader("Importancia por horizonte")
+        top = importance.sort_values("importance", ascending=False).groupby("horizonte", as_index=False).head(10)
+        st.altair_chart(alt.Chart(top).mark_bar().encode(
+            x=alt.X("importance:Q"), y=alt.Y("variable:N", sort="-x"), color=alt.Color("horizonte:N"),
+            tooltip=["horizonte", "variable", "importance"]
+        ).properties(height=500), width="stretch")
+        st.dataframe(top, width="stretch", hide_index=True)
+    if not diagnostics["lag_target"].empty:
+        st.subheader("Relacion de variables rezagadas con el target en TRAIN")
+        st.dataframe(diagnostics["lag_target"].head(30), width="stretch", hide_index=True)
+
+with tab_corr:
+    if not diagnostics["vif"].empty:
+        st.subheader("VIF")
+        vif = diagnostics["vif"].head(20).copy()
+        vif["log10_vif"] = np.log10(vif["vif"].clip(lower=1))
+        st.altair_chart(alt.Chart(vif).mark_bar().encode(
+            x=alt.X("log10_vif:Q", title="log10(VIF)"), y=alt.Y("variable:N", sort="-x"),
+            color=alt.Color("riesgo:N"), tooltip=["variable", "vif", "riesgo"]
+        ).properties(height=500), width="stretch")
+    st.subheader("Pares de alta correlacion")
+    pairs = diagnostics["pairs"].head(100)
+    if not pairs.empty:
+        st.altair_chart(alt.Chart(pairs).mark_rect().encode(
+            x=alt.X("variable_1:N", title=None, sort=None), y=alt.Y("variable_2:N", title=None, sort=None),
+            color=alt.Color("correlacion:Q", scale=alt.Scale(domain=[-1, 1], scheme="redblue")),
+            tooltip=["variable_1", "variable_2", alt.Tooltip("correlacion:Q", format=".3f")]
+        ).properties(height=520), width="stretch")
+    st.subheader("Correlaciones entre variables rezagadas")
+    lag_pairs = diagnostics["lag_pairs"].head(100)
+    if not lag_pairs.empty:
+        st.altair_chart(alt.Chart(lag_pairs).mark_rect().encode(
+            x=alt.X("variable_1:N", title=None, sort=None), y=alt.Y("variable_2:N", title=None, sort=None),
+            color=alt.Color("correlacion:Q", scale=alt.Scale(domain=[-1, 1], scheme="redblue")),
+            tooltip=["variable_1", "variable_2", alt.Tooltip("correlacion:Q", format=".3f")]
+        ).properties(height=520), width="stretch")
+
+with tab_trace:
+    st.subheader("Modelo seleccionado")
+    if manifests.get("selected"):
+        st.json(manifests["selected"])
+    st.subheader("Champion y poblacion formal")
+    if manifests.get("champion"):
+        st.json(manifests["champion"])
+    if not diagnostics["leakage"].empty:
+        st.subheader("Auditoria basica de leakage")
+        st.dataframe(diagnostics["leakage"], width="stretch", hide_index=True)
+    st.warning("Las correlaciones e importancias son diagnosticas; no prueban causalidad. Los modelos P32 se mantienen separados por su etiqueta retrospectiva.")
