@@ -37,6 +37,15 @@ def _pct(value, signed=False):
     return f"{value:+.2%}" if signed else f"{value:.2%}"
 
 
+def _percent_view(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """Prepara porcentajes para NumberColumn, que usa formato printf."""
+    result = frame.copy()
+    for column in columns:
+        if column in result:
+            result[column] = pd.to_numeric(result[column], errors="coerce") * 100
+    return result
+
+
 @st.cache_data
 def load_data(evaluation_mode: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     cfg = load_config(ROOT / "config/pipeline.yaml")
@@ -269,15 +278,16 @@ with tab_input:
         st.caption("La semana corresponde a la ventana objetivo lunes-domingo posterior al ultimo conteo semanal.")
         display = data[[c for c in ["modelo", "finca", "bloque", "semana_proyeccion", "real", "proyectado",
                                     "diferencia", "error_abs", "razon_proyectado_real", "desviacion_pct", "indicador"] if c in data]]
-        styled = display.style.map(
+        display_view = _percent_view(display, ["razon_proyectado_real", "desviacion_pct"])
+        styled = display_view.style.map(
             lambda value: "background-color: #c6efce" if value == "ACIERTO" else
             ("background-color: #ffeb9c" if value == "CERCA" else
              ("background-color: #ffc7ce" if value == "NO ACIERTO" else "")), subset=["indicador"])
         st.dataframe(styled, width="stretch", hide_index=True,
-                     column_config={"real": st.column_config.NumberColumn("Real", format="%,.0f"),
-                                    "proyectado": st.column_config.NumberColumn("Proyectado", format="%,.0f"),
-                                    "razon_proyectado_real": st.column_config.NumberColumn("Proyectado / real", format="0.0%"),
-                                    "desviacion_pct": st.column_config.NumberColumn("Desviacion", format="+0.0%;-0.0%")})
+                     column_config={"real": st.column_config.NumberColumn("Real", format="%.0f"),
+                                    "proyectado": st.column_config.NumberColumn("Proyectado", format="%.0f"),
+                                    "razon_proyectado_real": st.column_config.NumberColumn("Proyectado / real", format="%.1f%%"),
+                                    "desviacion_pct": st.column_config.NumberColumn("Desviacion", format="%+.1f%%")})
         st.download_button("Descargar evaluacion semanal CSV", display.to_csv(index=False),
                            "evaluacion_entrada_semanal.csv", "text/csv")
         st.download_button("Descargar detalle diario CSV", input_daily[input_daily.modelo.eq(input_model)].to_csv(index=False),
@@ -314,10 +324,11 @@ with tab_summary:
     st.caption("Origen seleccionado: fecha más cercana al lunes de la semana proyectada. "
                "ACIERTO: 93%-107%; CERCA: 90%-<93% o >107%-110%; NO ACIERTO: fuera de esos rangos.")
     hit_summary = operational_summary(operational)
-    st.dataframe(hit_summary, width="stretch", hide_index=True,
+    hit_summary_view = _percent_view(hit_summary, ["pct_acierto", "pct_acierto_o_cerca"])
+    st.dataframe(hit_summary_view, width="stretch", hide_index=True,
                  column_config={
-                     "pct_acierto": st.column_config.NumberColumn("% acierto", format="0.0%"),
-                     "pct_acierto_o_cerca": st.column_config.NumberColumn("% acierto o cerca", format="0.0%"),
+                     "pct_acierto": st.column_config.NumberColumn("% acierto", format="%.1f%%"),
+                     "pct_acierto_o_cerca": st.column_config.NumberColumn("% acierto o cerca", format="%.1f%%"),
                  })
 
     operational_level = "finca + bloque + semana" if block != "Todos" else "finca + semana"
@@ -335,14 +346,15 @@ with tab_summary:
                       "real", "proyectado_modelo", "diferencia", "diferencia_abs",
                       "ratio_proyectado_real", "desviacion_pct", "indicador"]
     detail_view = detail[[column for column in detail_columns if column in detail]]
-    st.dataframe(detail_view, width="stretch", hide_index=True,
+    detail_view_display = _percent_view(detail_view, ["ratio_proyectado_real", "desviacion_pct"])
+    st.dataframe(detail_view_display, width="stretch", hide_index=True,
                  column_config={
-                     "real": st.column_config.NumberColumn("Real", format="%,.0f"),
-                     "proyectado_modelo": st.column_config.NumberColumn("Proyectado", format="%,.0f"),
-                     "diferencia": st.column_config.NumberColumn("Diferencia", format="%,.0f"),
-                     "diferencia_abs": st.column_config.NumberColumn("Error absoluto", format="%,.0f"),
-                     "ratio_proyectado_real": st.column_config.NumberColumn("Proyectado / real", format="0.0%"),
-                     "desviacion_pct": st.column_config.NumberColumn("Desviacion", format="+0.0%;-0.0%"),
+                     "real": st.column_config.NumberColumn("Real", format="%.0f"),
+                     "proyectado_modelo": st.column_config.NumberColumn("Proyectado", format="%.0f"),
+                     "diferencia": st.column_config.NumberColumn("Diferencia", format="%.0f"),
+                     "diferencia_abs": st.column_config.NumberColumn("Error absoluto", format="%.0f"),
+                     "ratio_proyectado_real": st.column_config.NumberColumn("Proyectado / real", format="%.1f%%"),
+                     "desviacion_pct": st.column_config.NumberColumn("Desviacion", format="%+.1f%%"),
                  })
     with st.expander("Resumen agrupado por finca y semana"):
         audit_daily = daily.copy()
