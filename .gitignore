@@ -6,6 +6,12 @@ venv/
 outputs/
 !outputs/.gitkeep
 
+# Proyectos externos de solo lectura
+/Vision-artificial/
+/entrega_almer_*/
+/integracion_externa/Vision-artificial/
+/integracion_externa/entrega_almer_*/
+
 # Python
 __pycache__/
 *.py[cod]

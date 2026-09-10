@@ -47,9 +47,15 @@ Notas:
 conteo_CO = conteo_total - (conteo_RC + conteo_SS + conteo_AP)
 ```
 
-**Contrato**: `conteo_CO` es el stock residual contado que no esta en
-RC/SS/AP (estados tempranos PRE_RC y/o no clasificados). Es derivado, no
-medido. Mediana 35, max 1232 (~0.8% del total en mediana).
+La igualdad anterior expresa la particion de las cuatro clases y no demuestra
+que CO sea un residuo calculado. La trazabilidad del consolidado muestra que
+`consolidar_resultados.py` transporta directamente `conteo_CO` desde cada CSV
+de Vision-artificial; las 4.991 filas historicas compartidas por el RAW y el
+consolidado operacional coinciden exactamente en RC, SS, AP, CO y total.
+
+**Contrato corregido**: `conteo_CO` representa la clase visual de corte
+inmediato (`CORTE_INMEDIATO_VISUAL`). Se conserva separada de AP. No debe
+reinterpretarse como PRE_RC ni como no clasificado.
 **Uso**: no entra a x0 de M3/Semi Markov; se conserva en `fact_bloque_dia`
 y como feature candidata de modelos directos (p_CO).
 

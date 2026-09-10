@@ -13,14 +13,18 @@ import streamlit as st
 try:
     from canonical import load_config
     from dashboard_validation import (complete_windows, load_validation_predictions, model_scores,
-                                      operational_summary, operational_weekly, operational_weekly_selected,
+                                      load_latest_operational_run, operational_summary,
+                                      operational_model_comparison, operational_weekly,
+                                      operational_weekly_selected,
                                       weekly_status)
     from evaluacion_entrada import evaluate_input
     from reporte_excel import PREDICTION_FILES, PREDICTION_FILES_ROLLING
 except ModuleNotFoundError:
     from src.canonical import load_config
     from src.dashboard_validation import (complete_windows, load_validation_predictions, model_scores,
-                                          operational_summary, operational_weekly, operational_weekly_selected,
+                                          load_latest_operational_run, operational_summary,
+                                          operational_model_comparison, operational_weekly,
+                                          operational_weekly_selected,
                                           weekly_status)
     from src.evaluacion_entrada import evaluate_input
     from src.reporte_excel import PREDICTION_FILES, PREDICTION_FILES_ROLLING
@@ -121,6 +125,12 @@ def load_rf_optimization() -> tuple[pd.DataFrame, dict]:
     results = pd.read_csv(results_path) if results_path.exists() else pd.DataFrame()
     plan = json.loads(plan_path.read_text(encoding="utf-8")) if plan_path.exists() else {}
     return results, plan
+
+
+@st.cache_data(ttl=5)
+def load_operational_predictions(pointer_mtime: int) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    cfg = load_config(ROOT / "config/pipeline.yaml")
+    return load_latest_operational_run(ROOT, cfg["operational"]["runs_path"])
 
 
 @st.cache_data
@@ -265,6 +275,44 @@ st.markdown("""<style>
 </style>""", unsafe_allow_html=True)
 st.title("Markov Freedom")
 st.caption("Centro tecnico de validacion semanal, incertidumbre, diagnostico y trazabilidad")
+
+dashboard_cfg = load_config(ROOT / "config/pipeline.yaml")
+latest_pointer = ROOT / dashboard_cfg["operational"]["runs_path"] / "latest.json"
+pointer_mtime = latest_pointer.stat().st_mtime_ns if latest_pointer.exists() else 0
+try:
+    operational_daily, operational_predictions, operational_manifest = load_operational_predictions(pointer_mtime)
+except (FileNotFoundError, KeyError, ValueError) as exc:
+    operational_daily, operational_predictions, operational_manifest = pd.DataFrame(), pd.DataFrame(), {}
+    st.error(f"No se pudo validar la corrida operacional: {exc}")
+with st.expander("Ultima proyeccion operacional", expanded=True):
+    if operational_predictions.empty:
+        st.info("Aun no existe una corrida operacional. Ejecute proyeccion_vision.py.")
+    else:
+        st.caption(
+            f"Corrida {operational_manifest.get('run_id', 'N.A.')} | "
+            f"entrada {operational_manifest.get('semana_entrada', 'N.A.')} | "
+            f"RF entrenados hasta {operational_manifest.get('training_cutoff', 'N.A.')}"
+        )
+        op_farms = sorted(operational_predictions["finca"].dropna().unique())
+        op_farm = st.selectbox("Finca operacional", ["Todas"] + op_farms, key="op_farm")
+        op_scope = operational_predictions if op_farm == "Todas" else operational_predictions[
+            operational_predictions["finca"].eq(op_farm)]
+        op_blocks = sorted(op_scope["bloque"].dropna().astype(str).unique())
+        op_block = st.selectbox("Bloque operacional", ["Todos"] + op_blocks, key="op_block")
+        if op_block != "Todos":
+            op_scope = op_scope[op_scope["bloque"].astype(str).eq(op_block)]
+        op_models = operational_manifest.get("models", sorted(op_scope["modelo"].unique()))
+        selected_models = st.multiselect(
+            "Modelos operacionales", op_models, default=op_models, key="op_models")
+        op_scope = op_scope[op_scope["modelo"].isin(selected_models)]
+        op_comparison = operational_model_comparison(op_scope)
+        st.dataframe(op_comparison, width="stretch", hide_index=True)
+        report_path = (ROOT / dashboard_cfg["operational"]["runs_path"] /
+                       operational_manifest["run_id"] / "comparacion_modelos.xlsx")
+        if report_path.exists():
+            st.download_button("Descargar comparacion operacional", report_path.read_bytes(),
+                               report_path.name,
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 evaluation_mode = st.sidebar.radio("Evaluacion", ["Rolling origin", "Validacion fija"])
 weekly, daily = load_data(evaluation_mode)

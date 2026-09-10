@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from src.canonical import load_config
-from src.models.m3 import fit_m3, load_traditional_intervals, simulate
+from src.models.m3 import _causal_intervals, fit_m3, load_traditional_intervals, simulate
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,3 +53,13 @@ def test_m3_matches_power_bi_exposure_method_for_pradera():
         assert np.isclose(matrix.Q[2, 2], ap_stay)
         assert np.isclose(matrix.r[2], ap_cut)
         assert np.allclose(matrix.Q.sum(axis=0) + matrix.r + matrix.p, 1.0)
+
+
+def test_causal_intervals_exclude_trajectories_with_future_terminal():
+    intervals = pd.DataFrame({
+        "id_trayectoria": ["completa", "futura", "futura"],
+        "fecha": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"]),
+        "delta_dias": [1, 1, 1],
+    })
+    causal = _causal_intervals(intervals, pd.Timestamp("2026-01-02"))
+    assert causal["id_trayectoria"].unique().tolist() == ["completa"]

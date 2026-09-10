@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +17,60 @@ except ModuleNotFoundError:
 
 
 WINDOW_KEYS = ["modelo", "split", "finca", "bloque", "fecha_origen", "semana_proyeccion"]
+
+
+def load_latest_operational_run(root: Path, runs_path: str) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Carga la ultima corrida inmutable sin depender de artefactos de validacion."""
+    runs = root / runs_path
+    latest = runs / "latest.json"
+    if not latest.exists():
+        return pd.DataFrame(), pd.DataFrame(), {}
+    pointer = json.loads(latest.read_text(encoding="utf-8"))
+    run_id = pointer.get("run_id", "")
+    if not re.fullmatch(r"s\d{1,2}-[0-9a-f]{12}", run_id):
+        raise ValueError("Run ID operacional invalido")
+    run_dir = runs / run_id
+    daily_path = run_dir / "predicciones_diarias.parquet"
+    weekly_path = run_dir / "predicciones_semanales.parquet"
+    manifest_path = run_dir / "manifest.json"
+    if not daily_path.exists() or not weekly_path.exists() or not manifest_path.exists():
+        raise FileNotFoundError(f"Corrida operacional incompleta: {run_dir}")
+    manifest_bytes = manifest_path.read_bytes()
+    if hashlib.sha256(manifest_bytes).hexdigest() != pointer.get("manifest_sha256"):
+        raise ValueError("El hash del manifest operacional no coincide con latest")
+    manifest = json.loads(manifest_bytes)
+    if manifest.get("run_id") != run_id:
+        raise ValueError("El manifest no corresponde al puntero operacional")
+    dependency_hash = hashlib.sha256(json.dumps(
+        manifest.get("dependencies", {}), sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
+    expected_run_id = f"{manifest.get('semana_entrada', '').lower()}-{dependency_hash[:12]}"
+    if expected_run_id != run_id:
+        raise ValueError("Las dependencias no corresponden al run ID operacional")
+    expected_outputs = {
+        "comparacion_modelos.xlsx", "conteos_consolidados.parquet",
+        "predicciones_diarias.parquet", "predicciones_semanales.parquet",
+        "qa.csv", "videos_validos.parquet",
+    }
+    output_hashes = manifest.get("output_sha256")
+    if not isinstance(output_hashes, dict) or set(output_hashes) != expected_outputs:
+        raise ValueError("Manifest de salidas operacionales incompleto")
+    for name, expected in output_hashes.items():
+        path = run_dir / name
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise ValueError(f"Integridad invalida en corrida operacional: {path}")
+    daily = pd.read_parquet(daily_path)
+    weekly = pd.read_parquet(weekly_path)
+    return daily, weekly, manifest
+
+
+def operational_model_comparison(weekly: pd.DataFrame) -> pd.DataFrame:
+    """Pivota solo las claves observadas; no genera productos cartesianos."""
+    if weekly.empty:
+        return weekly.copy()
+    index = ["finca", "bloque", "fecha_origen", "semana_proyeccion"]
+    comparison = weekly.pivot(index=index, columns="modelo", values="proyectado").reset_index()
+    comparison.columns.name = None
+    return comparison
 
 
 def weekly_status(ratio: float | None) -> str:

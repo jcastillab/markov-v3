@@ -36,6 +36,55 @@ forecast:
   week_start: MONDAY
 
 # --------------------------------------------------------------------------
+# Vision artificial: un CSV/video valido representa una cama diferente
+# --------------------------------------------------------------------------
+vision:
+  results_path: input/Resultados
+  operational_history_path: resultados acutuales/conteos_vs_cortes_multifinca.xlsx
+  one_video_per_bed: true
+  conteo_co_semantics: CORTE_INMEDIATO_VISUAL
+  require_valid_video_metadata: true
+  reject_bad_qc: true
+  reject_identity_mismatch: true
+
+operational:
+  model_registry: outputs/models/operational
+  active_model_pointer: outputs/models/operational/active.json
+  runs_path: outputs/operational
+  minimum_history_days_28d: 14
+  models:
+    m3:
+      name: E00_M3_BASE_OPERATIONAL
+      family: M3
+      features: FENO_M3
+    rf_feno:
+      name: RF_OPT_FENO_OPERATIONAL
+      family: RF
+      features: FENO
+      hyperparameters:
+        n_estimators: 200
+        max_depth: 10
+        min_samples_leaf: 2
+        min_samples_split: 5
+        max_features: 0.5
+        criterion: squared_error
+        random_state: 42
+        n_jobs: 1
+    rf_h1_h7:
+      name: RF_H1_H7_FENO_OPERATIONAL
+      family: RF_HORIZON
+      features: FENO
+      hyperparameters:
+        n_estimators: 500
+        max_depth: 3
+        min_samples_leaf: 2
+        min_samples_split: 5
+        max_features: sqrt
+        criterion: squared_error
+        random_state: 42
+        n_jobs: 1
+
+# --------------------------------------------------------------------------
 # Homologacion de fincas: nombre_fuente -> finca_canonica
 # --------------------------------------------------------------------------
 farm_aliases:

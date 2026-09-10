@@ -121,6 +121,17 @@ def _period_for_date(date: pd.Timestamp, periods: list[dict]) -> str:
     return periods[-1]["name"]
 
 
+def _causal_intervals(intervals: pd.DataFrame, max_date: pd.Timestamp) -> pd.DataFrame:
+    """Conserva solo trayectorias cuyo desenlace ya era observable en max_date."""
+    data = intervals.copy()
+    if "id_trayectoria" not in data:
+        return data[data["fecha"] <= max_date].copy()
+    terminal_dates = (data["fecha"] + pd.to_timedelta(data["delta_dias"], unit="D"))
+    completed = terminal_dates.groupby(data["id_trayectoria"]).max()
+    valid_ids = completed[completed <= max_date].index
+    return data[data["id_trayectoria"].isin(valid_ids) & data["fecha"].le(max_date)].copy()
+
+
 @dataclass(frozen=True)
 class M3Matrix:
     finca: str
@@ -134,9 +145,10 @@ class M3Matrix:
 def fit_m3(intervals: pd.DataFrame, finca: str, periodo: str,
            max_date: pd.Timestamp | None = None) -> M3Matrix:
     """Ajusta M3 por grupos de duración, con fallback por estado."""
-    data = intervals[(intervals["finca"] == finca) & (intervals["periodo"] == periodo)].copy()
-    global_data = intervals[intervals["periodo"] == periodo].copy()
-    historical_data = intervals.copy()
+    available = _causal_intervals(intervals, max_date) if max_date is not None else intervals
+    data = available[(available["finca"] == finca) & (available["periodo"] == periodo)].copy()
+    global_data = available[available["periodo"] == periodo].copy()
+    historical_data = available.copy()
     if max_date is not None:
         data = data[data["fecha"] <= max_date]
         global_data = global_data[global_data["fecha"] <= max_date]
