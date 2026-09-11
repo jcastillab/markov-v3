@@ -430,6 +430,29 @@ with tab_input:
             filtered_daily = filtered_daily[filtered_daily.bloque.astype(str).eq(input_block)]
         if input_week != "Todas":
             filtered_daily = filtered_daily[filtered_daily.semana_proyeccion.astype(str).eq(input_week)]
+        chart_data = filtered_daily[["fecha_objetivo", "real", "proyectado"]].copy()
+        if not chart_data.empty:
+            chart_data["fecha_objetivo"] = pd.to_datetime(chart_data["fecha_objetivo"], errors="coerce")
+            chart_data["real"] = pd.to_numeric(chart_data["real"], errors="coerce")
+            chart_data["proyectado"] = pd.to_numeric(chart_data["proyectado"], errors="coerce")
+            chart_data = (chart_data.dropna(subset=["fecha_objetivo"])
+                          .groupby("fecha_objetivo", as_index=False)
+                          .agg(real=("real", "sum"), proyectado=("proyectado", "sum"))
+                          .sort_values("fecha_objetivo"))
+            chart_data = chart_data.melt("fecha_objetivo", var_name="serie", value_name="cantidad")
+            st.subheader("Real contra proyectado por día")
+            st.caption("El gráfico respeta el modelo y los filtros seleccionados; si se seleccionan varias fincas o bloques, agrega sus cantidades por fecha.")
+            input_chart = alt.Chart(chart_data).mark_line(point=True).encode(
+                x=alt.X("fecha_objetivo:T", title="Fecha objetivo"),
+                y=alt.Y("cantidad:Q", title="Cantidad"),
+                color=alt.Color("serie:N", title=None,
+                                scale=alt.Scale(domain=["real", "proyectado"],
+                                                range=["#2e7d32", "#1565c0"])),
+                tooltip=["fecha_objetivo:T", "serie:N", alt.Tooltip("cantidad:Q", format=",.0f")],
+            ).properties(height=340)
+            st.altair_chart(input_chart, width="stretch")
+        else:
+            st.info("No hay datos diarios para graficar con los filtros seleccionados.")
         st.download_button("Descargar detalle diario CSV", filtered_daily.to_csv(index=False),
                            "evaluacion_entrada_diaria.csv", "text/csv")
         xlsx_path = ROOT / "outputs/evaluation/evaluacion_entrada.xlsx"
