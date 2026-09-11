@@ -382,29 +382,44 @@ with tab_input:
             filtered_daily = filtered_daily[filtered_daily.bloque.astype(str).eq(input_block)]
         if input_week != "Todas":
             filtered_daily = filtered_daily[filtered_daily.semana_proyeccion.astype(str).eq(input_week)]
-        chart_data = filtered_daily[["fecha_objetivo", "real", "proyectado"]].copy()
-        if not chart_data.empty:
+        chart_aggregation = st.radio("Agregacion del grafico", ["Diaria", "Semanal"],
+                                     horizontal=True, key="input_chart_aggregation")
+        if chart_aggregation == "Semanal":
+            chart_data = filtered_daily[["semana_proyeccion", "real", "proyectado"]].copy()
+            chart_data["semana_proyeccion"] = pd.to_numeric(chart_data["semana_proyeccion"], errors="coerce")
+            chart_data = chart_data.dropna(subset=["semana_proyeccion"])
+            chart_data = (chart_data.groupby("semana_proyeccion", as_index=False)
+                          .sum(min_count=1).sort_values("semana_proyeccion"))
+            chart_x = alt.X("semana_proyeccion:O", title="Semana ISO")
+            chart_tooltip = ["semana_proyeccion:N", "serie:N"]
+            chart_title = "Real contra proyectado por semana"
+        else:
+            chart_data = filtered_daily[["fecha_objetivo", "real", "proyectado"]].copy()
             chart_data["fecha_objetivo"] = pd.to_datetime(chart_data["fecha_objetivo"], errors="coerce")
+            chart_data = chart_data.dropna(subset=["fecha_objetivo"])
+            chart_data = (chart_data.groupby("fecha_objetivo", as_index=False)
+                          .sum(min_count=1).sort_values("fecha_objetivo"))
+            chart_x = alt.X("fecha_objetivo:T", title="Fecha objetivo")
+            chart_tooltip = ["fecha_objetivo:T", "serie:N"]
+            chart_title = "Real contra proyectado por día"
+        if not chart_data.empty:
             chart_data["real"] = pd.to_numeric(chart_data["real"], errors="coerce")
             chart_data["proyectado"] = pd.to_numeric(chart_data["proyectado"], errors="coerce")
-            chart_data = (chart_data.dropna(subset=["fecha_objetivo"])
-                          .groupby("fecha_objetivo", as_index=False)
-                          .agg(real=("real", "sum"), proyectado=("proyectado", "sum"))
-                          .sort_values("fecha_objetivo"))
-            chart_data = chart_data.melt("fecha_objetivo", var_name="serie", value_name="cantidad")
-            st.subheader("Real contra proyectado por día")
-            st.caption("El gráfico respeta el modelo y los filtros seleccionados; si se seleccionan varias fincas o bloques, agrega sus cantidades por fecha.")
+            chart_period = "semana_proyeccion" if chart_aggregation == "Semanal" else "fecha_objetivo"
+            chart_data = chart_data.melt(chart_period, var_name="serie", value_name="cantidad")
+            st.subheader(chart_title)
+            st.caption("El gráfico respeta el modelo y los filtros seleccionados; la vista semanal usa la misma semana de proyeccion de las metricas.")
             input_chart = alt.Chart(chart_data).mark_line(point=True).encode(
-                x=alt.X("fecha_objetivo:T", title="Fecha objetivo"),
+                x=chart_x,
                 y=alt.Y("cantidad:Q", title="Cantidad"),
                 color=alt.Color("serie:N", title=None,
                                 scale=alt.Scale(domain=["real", "proyectado"],
                                                 range=["#2e7d32", "#1565c0"])),
-                tooltip=["fecha_objetivo:T", "serie:N", alt.Tooltip("cantidad:Q", format=",.0f")],
+                tooltip=chart_tooltip + [alt.Tooltip("cantidad:Q", format=",.0f")],
             ).properties(height=340)
             st.altair_chart(input_chart, width="stretch")
         else:
-            st.info("No hay datos diarios para graficar con los filtros seleccionados.")
+            st.info("No hay datos para graficar con los filtros seleccionados.")
         st.download_button("Descargar detalle diario CSV", filtered_daily.to_csv(index=False),
                            "evaluacion_entrada_diaria.csv", "text/csv")
         xlsx_path = ROOT / "outputs/evaluation/evaluacion_entrada.xlsx"
