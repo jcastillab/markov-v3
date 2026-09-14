@@ -20,19 +20,23 @@ from openpyxl.styles import PatternFill
 from openpyxl.utils import get_column_letter
 
 try:
-    from canonical import build_forecast_windows, load_config
+    from canonical import (active_beds_by_date, build_forecast_windows,
+                           load_bed_validity, load_config, load_sampled_beds)
     from evaluation.metrics import metrics
     from models.bayes import CovariateHierarchicalNB, DirichletM3, HierarchicalNB
     from models.m3 import M3Matrix, _period_for_date, fit_m3, load_traditional_intervals, simulate
     from models.selection import estimator_from_spec
     from models.supervised import NegativeBinomialGLM, build_supervised_dataset, feature_groups
+    from modeling.extrapolation import attach_extrapolation
 except ModuleNotFoundError:
-    from src.canonical import build_forecast_windows, load_config
+    from src.canonical import (active_beds_by_date, build_forecast_windows,
+                               load_bed_validity, load_config, load_sampled_beds)
     from src.evaluation.metrics import metrics
     from src.models.bayes import CovariateHierarchicalNB, DirichletM3, HierarchicalNB
     from src.models.m3 import M3Matrix, _period_for_date, fit_m3, load_traditional_intervals, simulate
     from src.models.selection import estimator_from_spec
     from src.models.supervised import NegativeBinomialGLM, build_supervised_dataset, feature_groups
+    from src.modeling.extrapolation import attach_extrapolation
 
 
 MODEL_NAMES = (
@@ -54,7 +58,7 @@ MODEL_NAMES = (
 )
 
 
-def _read_input(path: Path, cfg: dict, template: pd.DataFrame) -> pd.DataFrame:
+def _read_input(path: Path, cfg: dict, template: pd.DataFrame, raw: Path) -> pd.DataFrame:
     source = pd.read_excel(path)
     required = {"Finca", "Bloque", "Fecha", "Cantidad", "semana", "conteo_RC",
                 "conteo_SS", "conteo_AP", "conteo_CO", "conteo_total"}
@@ -81,25 +85,29 @@ def _read_input(path: Path, cfg: dict, template: pd.DataFrame) -> pd.DataFrame:
 
     # Las dimensiones estaticas y las features auxiliares ya auditadas se
     # reutilizan por clave; los conteos y el real siempre vienen de la entrada.
+    # La escala de muestreo se recalcula abajo: nunca se hereda por fecha desde
+    # el historico, porque una entrada puede contener semanas nuevas.
     aux = [c for c in template.columns if c not in {
         "finca", "bloque", "fecha", "semana_iso", "corte_comercial_real",
         "conteo_RC", "conteo_SS", "conteo_AP", "conteo_CO", "conteo_total",
         "es_fecha_conteo", "fecha_conteo_origen", "dias_desde_conteo",
         "conteo_RC_origen", "conteo_SS_origen", "conteo_AP_origen",
         "conteo_CO_origen", "conteo_total_origen", "semana_objetivo",
+        "camas_activas", "camas_muestreadas", "factor_extrapolacion",
+        "cobertura_muestreo", "plantas_activas", "area_activa",
     }]
     lookup = template[["finca", "bloque", "fecha"] + aux].drop_duplicates(
         ["finca", "bloque", "fecha"])
     out = out.merge(lookup, on=["finca", "bloque", "fecha"], how="left")
-    defaults = {
-        "camas_activas": 1.0, "camas_muestreadas": 1.0,
-        "factor_extrapolacion": 1.0, "cobertura_muestreo": 1.0,
-        "plantas_activas": 0.0, "area_activa": 0.0,
-        "poda_alineamiento": 0.0, "poda_corte": 0.0, "poda_total": 0.0,
-    }
-    for col in aux:
-        if col in defaults:
-            out[col] = out[col].fillna(defaults[col])
+    defaults = {"poda_alineamiento": 0.0, "poda_corte": 0.0, "poda_total": 0.0}
+    for col, default in defaults.items():
+        if col in out:
+            out[col] = out[col].fillna(default)
+
+    sampled = load_sampled_beds(raw, cfg["farm_aliases"], cfg["project"]["target_farms"])
+    beds = load_bed_validity(raw, cfg["farm_aliases"], cfg["project"]["target_farms"])
+    active = active_beds_by_date(beds, out["fecha"])
+    out = attach_extrapolation(out, sampled, active, strict=False)
     origins = (out[out["es_fecha_conteo"]].sort_values("fecha")
                .groupby(["finca", "bloque", "semana_iso"], as_index=False).tail(1)
                [["finca", "bloque", "semana_iso", "fecha", "conteo_RC", "conteo_SS",
@@ -135,6 +143,10 @@ def _base_rows(frame: pd.DataFrame, mask: np.ndarray, model: str, pred) -> pd.Da
     out = frame.loc[mask, cols].rename(columns={"target": "real"}).copy()
     out["modelo"] = model
     out["proyectado"] = np.asarray(pred, float)
+    for column in ("camas_activas", "camas_muestreadas", "factor_extrapolacion",
+                   "cobertura_muestreo"):
+        if column in frame:
+            out[column] = frame.loc[mask, column].to_numpy()
     return out
 
 
@@ -196,10 +208,16 @@ def _additional_rf_models(frame: pd.DataFrame, historical: pd.DataFrame, cfg: di
     eligible = np.ones(len(frame), dtype=bool)
     x_train = train[cols].replace([np.inf, -np.inf], np.nan).fillna(0)
     x_new = frame[cols].replace([np.inf, -np.inf], np.nan).fillna(0)
-    residual_estimator = estimator_from_spec(spec, cfg).fit(
-        x_train, train.target - train.M3_pred_bloque)
-    residual_pred = np.maximum(0, frame.M3_pred_bloque.to_numpy() + residual_estimator.predict(x_new))
-    residual = _base_rows(frame, eligible, "RF_RESIDUAL_M3_FENO_ENTRADA", residual_pred[eligible])
+    residual_target = train.target - train.M3_pred_bloque
+    residual_valid = np.isfinite(residual_target.to_numpy())
+    if not residual_valid.any():
+        residual = pd.DataFrame()
+    else:
+        residual_estimator = estimator_from_spec(spec, cfg).fit(
+            x_train.loc[residual_valid], residual_target.loc[residual_valid])
+        residual_pred = np.maximum(0, frame.M3_pred_bloque.to_numpy() +
+                                  residual_estimator.predict(x_new))
+        residual = _base_rows(frame, eligible, "RF_RESIDUAL_M3_FENO_ENTRADA", residual_pred[eligible])
     horizon_rows = []
     for horizon in sorted(pd.to_numeric(train.horizonte_dia).dropna().unique()):
         train_h = train[train.horizonte_dia.eq(horizon)]
@@ -267,6 +285,8 @@ def _weekly(daily: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for key, group in daily.groupby(keys, sort=False, dropna=False):
         group = group.sort_values("fecha_objetivo")
+        factor = (pd.to_numeric(group["factor_extrapolacion"], errors="coerce")
+                  if "factor_extrapolacion" in group else pd.Series(dtype=float))
         observed = group[group["real"].notna()]
         target_dates = pd.to_datetime(group["fecha_objetivo"], errors="coerce").dropna()
         observed_dates = pd.to_datetime(observed["fecha_objetivo"], errors="coerce").dropna()
@@ -290,6 +310,9 @@ def _weekly(daily: pd.DataFrame) -> pd.DataFrame:
             "dias": len(target_dates),
             "dias_reales": len(observed_dates),
             "estado_evaluacion": status,
+            "factor_extrapolacion_min": factor.min() if not factor.empty else np.nan,
+            "factor_extrapolacion_max": factor.max() if not factor.empty else np.nan,
+            "factor_extrapolacion_n": factor.nunique() if not factor.empty else 0,
         })
     result = pd.DataFrame(rows)
     result["diferencia"] = result.proyectado - result.real
@@ -336,12 +359,14 @@ def evaluate_input(root: Path, input_path: Path) -> tuple[Path, Path]:
     out = root / cfg["paths"]["outputs"]
     datasets, evaluation = out / "datasets", out / "evaluation"
     template = pd.read_parquet(datasets / "fact_bloque_dia.parquet")
-    external_fact = _read_input(input_path, cfg, template)
-    windows = build_forecast_windows(external_fact, int(cfg["forecast"]["horizon_days"]))
+    external_fact = _read_input(input_path, cfg, template, root / cfg["paths"]["raw"])
+    missing_scale = external_fact["es_fecha_conteo"] & ~external_fact["escala_disponible"]
+    scoring_fact = external_fact.loc[~missing_scale].copy()
+    windows = build_forecast_windows(scoring_fact, int(cfg["forecast"]["horizon_days"]))
     intervals = load_traditional_intervals(root / cfg["paths"]["raw"], cfg)
     pruning = pd.read_parquet(datasets / "poda_features.parquet")
     climate = pd.read_parquet(datasets / "clima_features.parquet")
-    frame = build_supervised_dataset(windows, external_fact, intervals, cfg, pruning, climate, include_incomplete=True)
+    frame = build_supervised_dataset(windows, scoring_fact, intervals, cfg, pruning, climate, include_incomplete=True)
     historical = pd.read_parquet(datasets / "dataset_supervisado_diario.parquet")
     predictions = {
         "E00_M3_BASE_ENTRADA": _m3(frame, intervals, cfg, cfg["m3"]["baseline_ingress"], "E00_M3_BASE_ENTRADA"),
@@ -367,6 +392,14 @@ def evaluate_input(root: Path, input_path: Path) -> tuple[Path, Path]:
     workbook.save(evaluation / "evaluacion_entrada.xlsx")
     daily.to_csv(daily_path, index=False)
     weekly.to_csv(weekly_path, index=False)
+    factor_audit = (daily.groupby(["modelo", "finca", "bloque", "semana_proyeccion"], as_index=False)
+                    .agg(filas=("factor_extrapolacion", "size"),
+                         factor_min=("factor_extrapolacion", "min"),
+                         factor_max=("factor_extrapolacion", "max"),
+                         factor_n=("factor_extrapolacion", "nunique"),
+                         factores_faltantes=("factor_extrapolacion", lambda values: int(values.isna().sum()))))
+    factor_audit_path = evaluation / "factor_extrapolacion_auditoria.csv"
+    factor_audit.to_csv(factor_audit_path, index=False)
     manifest = {
         "population": "EXTERNAL_SCORING",
         "input_file": str(input_path.relative_to(root)) if input_path.is_relative_to(root) else str(input_path),
@@ -379,6 +412,14 @@ def evaluate_input(root: Path, input_path: Path) -> tuple[Path, Path]:
         "weekly_rows": int(len(weekly)),
         "partial_week_rows": int(weekly["estado_evaluacion"].eq("PARCIAL").sum()),
         "complete_week_rows": int(weekly["estado_evaluacion"].eq("COMPLETA").sum()),
+        "input_rows_without_extrapolation": int(missing_scale.sum()),
+        "input_keys_without_extrapolation": int(
+            external_fact.loc[missing_scale, ["finca", "bloque", "semana_iso"]]
+            .drop_duplicates().shape[0]),
+        "extrapolation_policy": "exclude_origin_without_valid_scale",
+        "factor_audit_file": str(factor_audit_path.relative_to(root)),
+        "factor_audit_rows": int(len(factor_audit)),
+        "factor_audit_missing": int(factor_audit.factores_faltantes.sum()),
     }
     (evaluation / "external_run_manifest.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")

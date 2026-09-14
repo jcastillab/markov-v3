@@ -118,10 +118,16 @@ def _residual_predictions(frame, cfg, evaluation_start):
     residual = frame.target - frame.M3_pred_bloque
     rows = []
     for _, current, previous in _origins(frame, cfg, evaluation_start):
+        previous_residual = previous & np.isfinite(residual.to_numpy())
+        current_residual = current & np.isfinite(frame["M3_pred_bloque"].to_numpy())
+        if not previous_residual.any() or not current_residual.any():
+            continue
         estimator = estimator_from_spec(spec, cfg)
-        estimator.fit(x.loc[previous], residual.loc[previous])
-        pred = np.maximum(0, frame.loc[current, "M3_pred_bloque"] + estimator.predict(x.loc[current]))
-        rows.append(_frame_rows(frame, current, "RF_RESIDUAL_M3_FENO_ROLLING", pred, "RF_RESIDUAL", "FENO"))
+        estimator.fit(x.loc[previous_residual], residual.loc[previous_residual])
+        pred = np.maximum(0, frame.loc[current_residual, "M3_pred_bloque"] +
+                          estimator.predict(x.loc[current_residual]))
+        rows.append(_frame_rows(frame, current_residual, "RF_RESIDUAL_M3_FENO_ROLLING",
+                                pred, "RF_RESIDUAL", "FENO"))
     return pd.concat(rows, ignore_index=True)
 
 

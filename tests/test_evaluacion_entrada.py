@@ -47,6 +47,20 @@ def test_weekly_entry_partial_compares_only_observed_days():
     assert row.indicador == "ACIERTO"
 
 
+def test_weekly_entry_exposes_factor_audit_range():
+    daily = pd.DataFrame({
+        "modelo": ["M"] * 7, "finca": ["A"] * 7, "bloque": ["1"] * 7,
+        "fecha_origen": pd.Timestamp("2026-05-01"),
+        "fecha_objetivo": pd.date_range("2026-05-04", periods=7),
+        "semana_proyeccion": 202619, "real": [10] * 7,
+        "proyectado": [10] * 7, "factor_extrapolacion": [2.0] * 7,
+    })
+    row = _weekly(daily).iloc[0]
+    assert row.factor_extrapolacion_min == 2.0
+    assert row.factor_extrapolacion_max == 2.0
+    assert row.factor_extrapolacion_n == 1
+
+
 def test_entry_window_uses_last_count_and_next_monday_to_sunday():
     dates = pd.date_range("2026-05-04", "2026-05-17")
     fact = pd.DataFrame({

@@ -372,6 +372,26 @@ def _validate_single_iso_year(videos: pd.DataFrame, week: str) -> None:
         raise ValueError(f"La carpeta {week} contiene conteos de mas de un ano ISO")
 
 
+def _next_week_iso(date: pd.Timestamp) -> int:
+    """Devuelve la semana ISO objetivo del lunes siguiente al origen."""
+    monday = pd.Timestamp(date).to_period("W-SUN").end_time.normalize() + pd.Timedelta(days=1)
+    iso = monday.isocalendar()
+    return int(iso.year * 100 + iso.week)
+
+
+def _validate_next_week_prediction(daily: pd.DataFrame, videos: pd.DataFrame,
+                                  week: str) -> int:
+    """Evita mezclar semanas: una corrida solo puede proyectar la siguiente."""
+    expected = {_next_week_iso(date) for date in pd.to_datetime(videos["fecha_conteo"])}
+    actual = set(pd.to_numeric(daily["semana_proyeccion"], errors="coerce").dropna().astype(int))
+    if len(expected) != 1 or actual != expected:
+        raise ValueError(
+            f"La corrida {week} no proyecta exactamente la semana siguiente: "
+            f"esperada={sorted(expected)}, encontrada={sorted(actual)}"
+        )
+    return next(iter(expected))
+
+
 def _publish_latest(runs: Path, run_id: str) -> None:
     manifest_hash = _file_sha256(runs / run_id / "manifest.json")
     latest_temporary = runs / f".latest-{os.getpid()}.tmp"
@@ -488,10 +508,13 @@ def main() -> None:
     if daily.duplicated(prediction_key).any():
         raise ValueError("La prediccion operacional tiene claves duplicadas")
     weekly = _weekly_predictions(daily)
+    target_week = _validate_next_week_prediction(daily, videos, week)
     comparison = _comparison(weekly)
 
     run_manifest = {
         "run_id": run_id, "semana_entrada": week,
+        "semana_objetivo": target_week,
+        "prediction_scope": "ONLY_NEXT_ISO_WEEK",
         "input_sha256": dependencies["entrada_visual"],
         "model_artifact_sha256": model_manifest["artifact_sha256"],
         "model_manifest_sha256": model_manifest["manifest_sha256"],

@@ -29,7 +29,11 @@ def main():
     climate = pd.read_parquet(datasets / "clima_features.parquet")
     frame = build_supervised_dataset(windows, fact, intervals, cfg, pruning, climate)
     frame.to_parquet(datasets / "dataset_supervisado_diario.parquet", index=False)
-    train, valid = temporal_masks(frame, cfg, origin_values=windows["fecha_origen"])
+    train, valid = (mask.copy() for mask in temporal_masks(
+        frame, cfg, origin_values=windows["fecha_origen"]))
+    observed_target = frame["target"].notna().to_numpy()
+    train &= observed_target
+    valid &= observed_target
     groups = feature_groups(frame)
     model_n_jobs = int(cfg["random_forest"].get("parallel", {}).get("model_n_jobs", 1))
     numeric = frame.select_dtypes(include=[np.number]).columns
@@ -70,12 +74,18 @@ def main():
         min_samples_split=rf_cfg["min_samples_split_grid"][0], max_features=rf_cfg["max_features"][0],
         random_state=rf_cfg["random_state"], n_jobs=model_n_jobs)
     residual = frame.target.to_numpy() - frame.M3_pred_bloque.to_numpy()
-    residual_rf.fit(x[train], residual[train])
-    pred = np.maximum(0, frame.M3_pred_bloque.to_numpy()[valid] + residual_rf.predict(x[valid]))
-    trace.assign(pred=pred).to_csv(
+    residual_train = train & np.isfinite(residual)
+    residual_valid = valid & np.isfinite(residual)
+    residual_rf.fit(x[residual_train], residual[residual_train])
+    pred = np.maximum(0, frame.M3_pred_bloque.to_numpy()[residual_valid] +
+                      residual_rf.predict(x[residual_valid]))
+    residual_trace = frame.loc[residual_valid, trace_columns].reset_index(drop=True).rename(
+        columns={"target": "real"})
+    residual_trace.assign(pred=pred).to_csv(
         evaluation / "predictions_rf_residual_m3_feno.csv", index=False)
     rows.append({"experiment_id": "RF_RESIDUAL_M3_FENO", "split": "VALIDATION", "causal": True,
-                 "n": int(valid.sum()), **metrics(frame.target[valid], pd.Series(pred))})
+                 "n": int(residual_valid.sum()),
+                 **metrics(frame.target[residual_valid], pd.Series(pred))})
     # Ablacion de horizonte: siete RF independientes y suma semanal equivalente.
     h_pred = []
     for horizon in range(1, int(cfg["forecast"]["horizon_days"]) + 1):

@@ -143,6 +143,12 @@ def load_input_evaluation() -> tuple[pd.DataFrame, pd.DataFrame]:
     return pd.read_csv(daily_path, parse_dates=["fecha_origen", "fecha_objetivo"]), pd.read_csv(weekly_path, parse_dates=["fecha_origen"])
 
 
+@st.cache_data
+def load_input_factor_audit() -> pd.DataFrame:
+    path = ROOT / "outputs/evaluation/factor_extrapolacion_auditoria.csv"
+    return pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+
 def apply_filters(frame: pd.DataFrame, farm: str, block: str, week: str = "Todas") -> pd.DataFrame:
     result = frame
     if farm != "Todas":
@@ -184,10 +190,15 @@ def external_farm_weekly(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
         return frame
     keys = ["modelo", "finca", "semana_proyeccion"]
-    result = (frame.groupby(keys, as_index=False, dropna=False)
-              .agg(real=("real", "sum"), proyectado=("proyectado", "sum"),
-                   dias_reales=("dias_reales", "sum"), dias=("dias", "sum"),
-                   bloques=("bloque", "nunique")))
+    aggregations = {
+        "real": ("real", "sum"), "proyectado": ("proyectado", "sum"),
+        "dias_reales": ("dias_reales", "sum"), "dias": ("dias", "sum"),
+        "bloques": ("bloque", "nunique"),
+    }
+    for column in ("factor_extrapolacion_min", "factor_extrapolacion_max"):
+        if column in frame:
+            aggregations[column] = (column, "min" if column.endswith("min") else "max")
+    result = frame.groupby(keys, as_index=False, dropna=False).agg(**aggregations)
     result["diferencia"] = result.proyectado - result.real
     result["error_abs"] = result.diferencia.abs()
     result["razon_proyectado_real"] = np.where(result.real.ne(0), result.proyectado / result.real, np.nan)
@@ -291,6 +302,7 @@ with st.expander("Ultima proyeccion operacional", expanded=True):
         st.caption(
             f"Corrida {operational_manifest.get('run_id', 'N.A.')} | "
             f"entrada {operational_manifest.get('semana_entrada', 'N.A.')} | "
+            f"objetivo {operational_manifest.get('semana_objetivo', 'N.A.')} | "
             f"RF entrenados hasta {operational_manifest.get('training_cutoff', 'N.A.')}"
         )
         op_farms = sorted(operational_predictions["finca"].dropna().unique())
@@ -376,11 +388,17 @@ with tab_input:
     st.subheader("Evaluacion del archivo de entrada")
     input_path = ROOT / "resultados acutuales/conteos_vs_cortes_multifinca.xlsx"
     input_daily, input_weekly = load_input_evaluation()
+    input_factor_audit = load_input_factor_audit()
     if st.button("Ejecutar evaluacion de la entrada", disabled=not input_path.exists()):
         with st.spinner("Generando proyecciones causales para todos los modelos..."):
-            evaluate_input(ROOT, input_path)
-        load_input_evaluation.clear()
-        st.rerun()
+            try:
+                evaluate_input(ROOT, input_path)
+            except (FileNotFoundError, ValueError) as exc:
+                st.error(f"Evaluacion bloqueada: {exc}")
+            else:
+                load_input_evaluation.clear()
+                load_input_factor_audit.clear()
+                st.rerun()
     if input_weekly.empty:
         st.info("Aun no existe una evaluacion para la entrada. Use el boton para generarla.")
     else:
@@ -403,13 +421,16 @@ with tab_input:
         st.caption("La evaluacion externa usa el historico original para entrenar y este archivo solo para scoring. Las semanas parciales comparan unicamente dias reales observados.")
         display = data[[c for c in ["modelo", "finca", "bloque", "semana_proyeccion", "estado_evaluacion",
                                     "bloques", "dias_reales", "dias", "real", "proyectado", "diferencia",
-                                    "error_abs", "razon_proyectado_real", "desviacion_pct", "indicador"] if c in data]]
+                                    "error_abs", "factor_extrapolacion_min", "factor_extrapolacion_max",
+                                    "razon_proyectado_real", "desviacion_pct", "indicador"] if c in data]]
         display_view = _percent_view(display, ["razon_proyectado_real", "desviacion_pct"])
         status_columns = [column for column in ["indicador", "estado_evaluacion"] if column in display_view]
         styled = display_view.style.map(_status_style, subset=status_columns)
         st.dataframe(styled, width="stretch", hide_index=True,
                      column_config={"real": st.column_config.NumberColumn("Real", format="%.0f"),
                                     "proyectado": st.column_config.NumberColumn("Proyectado", format="%.0f"),
+                                    "factor_extrapolacion_min": st.column_config.NumberColumn("Factor mínimo", format="%.3f"),
+                                    "factor_extrapolacion_max": st.column_config.NumberColumn("Factor máximo", format="%.3f"),
                                     "razon_proyectado_real": st.column_config.NumberColumn("Proyectado / real", format="%.1f%%"),
                                      "desviacion_pct": st.column_config.NumberColumn("Desviacion", format="%+.1f%%")})
         ext_summary = external_summary(external_farm_weekly(external_operational_weekly(
@@ -421,6 +442,14 @@ with tab_input:
                          column_config={"pct_acierto": st.column_config.NumberColumn("% acierto", format="%.1f%%"),
                                         "pct_acierto_o_cerca": st.column_config.NumberColumn("% acierto o cerca", format="%.1f%%"),
                                         "wape": st.column_config.NumberColumn("WAPE", format="%.1f%%")})
+        if not input_factor_audit.empty:
+            with st.expander("Auditoria del factor de extrapolacion"):
+                factor_view = input_factor_audit[input_factor_audit.modelo.eq(input_model)].copy()
+                factor_view = apply_filters(factor_view, input_farm, input_block, input_week)
+                st.caption("El factor se calcula por bloque y semana de origen. Las semanas o bloques sin escala valida no se puntuan.")
+                st.dataframe(factor_view, width="stretch", hide_index=True,
+                             column_config={"factor_min": st.column_config.NumberColumn("Factor mínimo", format="%.3f"),
+                                            "factor_max": st.column_config.NumberColumn("Factor máximo", format="%.3f")})
         st.download_button("Descargar evaluacion semanal CSV", display.to_csv(index=False),
                            "evaluacion_entrada_semanal.csv", "text/csv")
         filtered_daily = input_daily[input_daily.modelo.eq(input_model)].copy()

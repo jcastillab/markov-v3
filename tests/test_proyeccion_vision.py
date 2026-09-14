@@ -5,7 +5,8 @@ import pandas as pd
 
 from src.proyeccion_vision import (aggregate_vision_counts, load_vision_videos,
                                    project_vision_counts, _latest_week,
-                                   _parse_vision_date, _validate_single_iso_year)
+                                   _parse_vision_date, _validate_next_week_prediction,
+                                   _validate_single_iso_year)
 from src.models.m3 import M3Matrix
 
 
@@ -143,3 +144,16 @@ def test_mixed_iso_years_in_one_week_are_rejected():
     videos = pd.DataFrame({"semana_iso": [202601, 202701]})
     with np.testing.assert_raises_regex(ValueError, "mas de un ano ISO"):
         _validate_single_iso_year(videos, "S1")
+
+
+def test_operational_run_only_accepts_the_next_iso_week():
+    videos = pd.DataFrame({"fecha_conteo": pd.to_datetime(["2026-09-01"])})
+    daily = pd.DataFrame({"semana_proyeccion": [202637, 202637]})
+    assert _validate_next_week_prediction(daily, videos, "S36") == 202637
+
+
+def test_operational_run_rejects_accumulated_weeks():
+    videos = pd.DataFrame({"fecha_conteo": pd.to_datetime(["2026-09-01"])})
+    daily = pd.DataFrame({"semana_proyeccion": [202636, 202637]})
+    with np.testing.assert_raises_regex(ValueError, "exactamente la semana siguiente"):
+        _validate_next_week_prediction(daily, videos, "S36")
