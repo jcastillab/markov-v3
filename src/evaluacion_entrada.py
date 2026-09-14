@@ -104,7 +104,7 @@ def _read_input(path: Path, cfg: dict, template: pd.DataFrame, raw: Path) -> pd.
         if col in out:
             out[col] = out[col].fillna(default)
 
-sampled = load_sampled_beds(raw, cfg)
+    sampled = load_sampled_beds(raw, cfg)
     beds = load_bed_validity(raw, cfg)
     active = active_beds_by_date(beds, out["fecha"])
     out = attach_extrapolation(out, sampled, active, strict=False)

@@ -56,6 +56,8 @@ vision:
 operational:
   model_registry: outputs/models/operational
   active_model_pointer: outputs/models/operational/active.json
+  bundle_registry: outputs/models/bundles
+  bundle_pointer: outputs/models/bundles/active.json
   runs_path: outputs/operational
   minimum_history_days_28d: 14
   models:

@@ -287,6 +287,31 @@ def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _registry_versions(registry: Path) -> dict[str, str]:
+    """Ultima version de cada familia presente en el registro de bundles."""
+    versions: dict[str, str] = {}
+    if not registry.is_dir():
+        return versions
+    for version_dir in sorted(registry.iterdir()):
+        manifest_path = version_dir / "manifest.json"
+        if manifest_path.is_file():
+            family = json.loads(manifest_path.read_text(encoding="utf-8")).get("family")
+            if family:
+                versions[family] = version_dir.name
+    return versions
+
+
+def _load_family_adapter(registry: Path, family: str):
+    from modeling import load_bundle
+
+    versions = _registry_versions(registry)
+    version = versions.get(family)
+    if version is None:
+        return None, None
+    adapter, manifest = load_bundle(registry, version)
+    return adapter, manifest
+
+
 def _dependency_hashes(root: Path, results_root: Path, week: str,
                        cfg: dict, model_manifest: dict) -> dict[str, str]:
     raw = root / cfg["paths"]["raw"]
@@ -307,6 +332,9 @@ def _dependency_hashes(root: Path, results_root: Path, week: str,
     hashes["entrada_visual"] = _input_sha256(results_root, week)
     hashes["modelo_rf"] = model_manifest["artifact_sha256"]
     hashes["manifest_modelo"] = model_manifest["manifest_sha256"]
+    versions = _registry_versions(root / cfg["operational"]["bundle_registry"])
+    hashes["bundles_familias"] = hashlib.sha256(json.dumps(
+        versions, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
     hashes["configuracion"] = hashlib.sha256(json.dumps(
         cfg, sort_keys=True, default=str, ensure_ascii=True).encode("utf-8")).hexdigest()
     return hashes
@@ -490,20 +518,51 @@ def main() -> None:
     output_columns = ["modelo", "finca", "bloque", "fecha_origen", "fecha_objetivo",
                       "semana_proyeccion", "horizonte_dia", "proyectado",
                       "estado_modelo", "motivo", "model_data_cutoff"]
-    daily = pd.concat([m3_daily[output_columns], rf_daily[output_columns]], ignore_index=True)
+
+    extra_daily = []
+    for family in ("GLM_NB", "BAYES_NB", "BAYES_DIRICHLET"):
+        adapter, family_manifest = _load_family_adapter(
+            root / cfg["operational"]["bundle_registry"], family)
+        if adapter is None:
+            continue
+        try:
+            predictions = adapter.predict(feature_frame)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ADVERTENCIA: {family} no pudo puntuar ({exc})")
+            continue
+        rows = feature_frame[["finca", "bloque", "fecha_origen", "fecha_objetivo",
+                              "semana_proyeccion", "horizonte_dia"]].copy()
+        rows["modelo"] = adapter.name
+        rows["proyectado"] = np.asarray(predictions, float)
+        rows["estado_modelo"] = "DISPONIBLE"
+        rows["motivo"] = ""
+        rows["model_data_cutoff"] = family_manifest.get("training_cutoff")
+        extra_daily.append(rows)
+
+    daily = pd.concat(
+        [m3_daily[output_columns], rf_daily[output_columns]] +
+        [frame[output_columns] for frame in extra_daily],
+        ignore_index=True)
     model_metadata = {
         cfg["operational"]["models"]["m3"]["name"]: ("M3", "FENO_M3"),
         cfg["operational"]["models"]["rf_feno"]["name"]: ("RF", "FENO"),
         cfg["operational"]["models"]["rf_h1_h7"]["name"]: ("RF_HORIZON", "FENO"),
+        "GLM_NB_FENO_OPERATIONAL": ("GLM_NB", "FENO"),
+        "NB_JERARQUICO_OPERATIONAL": ("BAYES_NB", "POOLING"),
+        "M3_DIRICHLET_MULTINOMIAL_OPERATIONAL": ("BAYES_DIRICHLET", "M3"),
     }
     daily["familia"] = daily["modelo"].map(lambda value: model_metadata[value][0])
     daily["features"] = daily["modelo"].map(lambda value: model_metadata[value][1])
+    daily["model_data_cutoff"] = pd.to_datetime(
+        daily["model_data_cutoff"], errors="coerce").dt.strftime("%Y-%m-%d")
     daily["causal"] = True
     daily["run_id"] = run_id
+    rf_names = {cfg["operational"]["models"]["rf_feno"]["name"],
+                cfg["operational"]["models"]["rf_h1_h7"]["name"]}
     daily["training_cutoff"] = np.where(
-        daily["familia"].eq("M3"), None, model_manifest["training_cutoff"])
+        daily["familia"].eq("M3"), None, daily["model_data_cutoff"])
     daily["model_artifact_sha256"] = np.where(
-        daily["familia"].eq("M3"), None, model_manifest["artifact_sha256"])
+        daily["modelo"].isin(rf_names), model_manifest["artifact_sha256"], None)
     prediction_key = ["modelo", "finca", "bloque", "fecha_origen", "fecha_objetivo", "horizonte_dia"]
     if daily.duplicated(prediction_key).any():
         raise ValueError("La prediccion operacional tiene claves duplicadas")
@@ -520,7 +579,12 @@ def main() -> None:
         "model_manifest_sha256": model_manifest["manifest_sha256"],
         "training_cutoff": model_manifest["training_cutoff"],
         "models": [cfg["operational"]["models"][key]["name"]
-                   for key in ("m3", "rf_feno", "rf_h1_h7")],
+                   for key in ("m3", "rf_feno", "rf_h1_h7")] +
+                  [name for name in model_metadata
+                   if name not in {cfg["operational"]["models"]["m3"]["name"],
+                                   cfg["operational"]["models"]["rf_feno"]["name"],
+                                   cfg["operational"]["models"]["rf_h1_h7"]["name"]}
+                   and name in set(daily["modelo"])],
         "camas_validas": int(len(videos)), "origenes": int(len(comparison)),
         "predictions_are_immutable": True, "dependencies": dependencies,
         "conteo_co_semantics": cfg["vision"]["conteo_co_semantics"],
@@ -556,5 +620,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     main()

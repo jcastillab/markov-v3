@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_climate_daily_contract_and_vpd():
     cfg = load_config(ROOT / "config" / "pipeline.yaml")
-    hourly, qa = load_hourly_climate(ROOT / "data" / "raw",
-                                     ["2025.xlsx", "2026.xlsx"], 746)
+    hourly, qa = load_hourly_climate(ROOT / cfg["paths"]["raw"],
+                                     [cfg["sources"]["clima_2025"], cfg["sources"]["clima_2026"]], 746)
     daily = build_daily_climate(hourly.head(48), cfg)
     assert len(daily) > 0
     assert qa["duplicados_eliminados"] >= 0

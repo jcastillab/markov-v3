@@ -232,6 +232,49 @@ def external_summary(frame: pd.DataFrame) -> pd.DataFrame:
     return summary.sort_values(["pct_acierto", "wape"], ascending=[False, True])
 
 
+def future_global(daily: pd.DataFrame, models: list[str], farm: str) -> pd.DataFrame:
+    """Total por modelo y finca para la semana futura (sin real)."""
+    data = daily[daily["modelo"].isin(models)]
+    if farm != "Todas":
+        data = data[data["finca"].eq(farm)]
+    if data.empty:
+        return data
+    result = (data.groupby(["modelo", "finca", "semana_proyeccion"],
+                           as_index=False, dropna=False)
+              .agg(total_proyectado=("proyectado", "sum"),
+                   bloques=("bloque", "nunique"),
+                   dias_proyectados=("proyectado", "count"),
+                   estado_modelo=("estado_modelo", "first")))
+    return result.sort_values(["modelo", "finca"])
+
+
+def future_totals(daily: pd.DataFrame, models: list[str]) -> pd.DataFrame:
+    """Totales globales por modelo (suma de todas las fincas)."""
+    data = daily[daily["modelo"].isin(models)]
+    if data.empty:
+        return data
+    return (data.groupby(["modelo", "semana_proyeccion"], as_index=False, dropna=False)
+            .agg(total_proyectado=("proyectado", "sum"),
+                 fincas=("finca", "nunique"),
+                 bloques=("bloque", "nunique"))
+            .sort_values("total_proyectado", ascending=False))
+
+
+def future_by_block(daily: pd.DataFrame, models: list[str], farm: str) -> pd.DataFrame:
+    """Detalle finca+bloque de la semana futura."""
+    data = daily[daily["modelo"].isin(models)]
+    if farm != "Todas":
+        data = data[data["finca"].eq(farm)]
+    if data.empty:
+        return data
+    return (data.groupby(["modelo", "finca", "bloque", "semana_proyeccion"],
+                         as_index=False, dropna=False)
+            .agg(total_proyectado=("proyectado", "sum"),
+                 dias_proyectados=("proyectado", "count"),
+                 estado_modelo=("estado_modelo", "first"))
+            .sort_values(["modelo", "finca", "bloque"]))
+
+
 def weekly_summary(frame: pd.DataFrame) -> pd.DataFrame:
     result = model_scores(frame).rename(columns={
         "wape": "wape_semanal", "mae": "mae_semanal", "rmse": "rmse_semanal",
@@ -380,12 +423,13 @@ with st.expander("Definiciones y lectura metodologica"):
     - Las ventanas son completas H1-H7 y se mantienen separadas por finca, bloque, origen y semana.
     """)
 
-tab_summary, tab_input, tab_rf, tab_bayes, tab_overfit, tab_features, tab_corr, tab_trace = st.tabs([
-    "Resumen semanal", "Nueva entrada", "RF optimizados", "Intervalos Bayes", "Sobreajuste", "Variables y rezagos", "Correlacion y VIF", "Trazabilidad"
+tab_summary, tab_input, tab_forecast, tab_rf, tab_bayes, tab_overfit, tab_features, tab_corr, tab_trace = st.tabs([
+    "Resumen semanal", "Nueva entrada", "Pronóstico futuro", "RF optimizados", "Intervalos Bayes", "Sobreajuste", "Variables y rezagos", "Correlacion y VIF", "Trazabilidad"
 ])
 
 with tab_input:
     st.subheader("Evaluacion del archivo de entrada")
+    st.caption("Muestra solo semanas con corte real disponible para contrastar modelos. La semana futura se consulta en 'Pronóstico futuro'.")
     input_path = ROOT / dashboard_cfg["paths"]["external"] / dashboard_cfg["vision"]["operational_history_path"]
     input_daily, input_weekly = load_input_evaluation()
     input_factor_audit = load_input_factor_audit()
@@ -503,6 +547,61 @@ with tab_input:
         if xlsx_path.exists():
             st.download_button("Descargar evaluacion Excel", xlsx_path.read_bytes(),
                                "evaluacion_entrada.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+with tab_forecast:
+    st.subheader("Pronóstico futuro de la semana siguiente")
+    if operational_predictions.empty:
+        st.info("Aun no existe una corrida operacional. Ejecute scripts/run_operational.py o src/proyeccion_vision.py.")
+    else:
+        st.caption(
+            f"Entrada: {operational_manifest.get('semana_entrada', 'N.A.')} -> "
+            f"Semana pronosticada: {operational_manifest.get('semana_objetivo', 'N.A.')} | "
+            f"Corrida: {operational_manifest.get('run_id', 'N.A.')}"
+        )
+        st.caption("Sin corte real todavia: esta vista no calcula WAPE ni ACIERTO.")
+        fc_farms = sorted(operational_predictions["finca"].dropna().unique())
+        fc_farm = st.selectbox("Finca", ["Todas"] + fc_farms, key="fc_farm")
+        fc_models = sorted(operational_predictions["modelo"].dropna().unique())
+        fc_selected = st.multiselect("Modelos (mejor por familia)", fc_models, default=fc_models,
+                                     key="fc_models")
+        if not fc_selected:
+            st.warning("Selecciona al menos un modelo.")
+            fc_global = pd.DataFrame()
+            fc_blocks = pd.DataFrame()
+        else:
+            fc_granularity = st.radio("Granularidad", ["Total global", "Finca + semana", "Por bloque"],
+                                      horizontal=True, key="fc_granularity")
+            fc_global = future_global(operational_predictions, fc_selected, fc_farm)
+            fc_blocks = future_by_block(operational_predictions, fc_selected, fc_farm)
+            if fc_granularity == "Total global":
+                fc_view = future_totals(operational_predictions, fc_selected)
+                fc_view = fc_view[fc_view["modelo"].isin(fc_selected)]
+                st.dataframe(fc_view, width="stretch", hide_index=True,
+                             column_config={"total_proyectado": st.column_config.NumberColumn("Total proyectado", format="%.0f")})
+            elif fc_granularity == "Finca + semana":
+                st.dataframe(fc_global, width="stretch", hide_index=True,
+                             column_config={"total_proyectado": st.column_config.NumberColumn("Total proyectado", format="%.0f")})
+            else:
+                st.dataframe(fc_blocks, width="stretch", hide_index=True,
+                             column_config={"total_proyectado": st.column_config.NumberColumn("Total proyectado", format="%.0f")})
+            if not fc_global.empty:
+                chart_data = fc_global[["modelo", "finca", "total_proyectado"]].copy()
+                if fc_farm == "Todas":
+                    chart_data = (chart_data.groupby("modelo", as_index=False)
+                                  .agg(total_proyectado=("total_proyectado", "sum")))
+                st.subheader("Comparacion de modelos")
+                st.altair_chart(alt.Chart(chart_data).mark_bar().encode(
+                    x=alt.X("total_proyectado:Q", title="Total proyectado"),
+                    y=alt.Y("modelo:N", sort="-x", title=None),
+                    color=alt.Color("modelo:N", legend=None),
+                    tooltip=["modelo", alt.Tooltip("total_proyectado:Q", format=",.0f")],
+                ).properties(height=max(220, len(chart_data) * 40)), width="stretch")
+        st.download_button("Descargar pronostico global CSV",
+                           (fc_global if not fc_global.empty else pd.DataFrame()).to_csv(index=False),
+                           "pronostico_futuro_global.csv", "text/csv")
+        st.download_button("Descargar detalle por bloque CSV",
+                           (fc_blocks if not fc_blocks.empty else pd.DataFrame()).to_csv(index=False),
+                           "pronostico_futuro_bloques.csv", "text/csv")
 
 with tab_summary:
     weekly_by_iso = (model_weekly.groupby("semana_proyeccion", as_index=False)
