@@ -72,7 +72,7 @@ class DirichletAdapter:
         self._events = self._posterior.events
         return self
 
-    def _matrix_from_alphas(self) -> np.ndarray:
+    def _matrix_from_alphas(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         q, r, loss = np.zeros((3, 3)), np.zeros(3), np.zeros(3)
         for source in self._states:
             j = self._states.index(source)
@@ -84,17 +84,17 @@ class DirichletAdapter:
                 q[j, j], advance, loss[j] = values
                 destination = "SS" if source == "RC" else "AP"
                 q[self._states.index(destination), j] = advance
-        return q
+        return q, r, loss
 
     def predict(self, frame: pd.DataFrame) -> np.ndarray:
         from src.models.m3 import M3Matrix, simulate
 
         if self._alphas is None:
             raise RuntimeError("DirichletAdapter no esta ajustado")
-        q = self._matrix_from_alphas()
+        q, r, loss = self._matrix_from_alphas()
         predictions = []
         for row in frame.itertuples(index=False):
-            matrix = M3Matrix("", "", q, np.zeros(3), np.zeros(3), pd.DataFrame())
+            matrix = M3Matrix("", "", q, r, loss, pd.DataFrame())
             x0 = np.array([row.RC_t0, row.SS_t0, row.AP_t0], dtype=float)
             lead = int((pd.Timestamp(row.fecha_objetivo) - pd.Timestamp(row.fecha_origen)).days)
             factor = float(getattr(row, "factor_extrapolacion", 1.0))

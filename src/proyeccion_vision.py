@@ -324,6 +324,7 @@ def _dependency_hashes(root: Path, results_root: Path, week: str,
         "codigo_supervisado": root / "src" / "models" / "supervised.py",
         "codigo_m3": root / "src" / "models" / "m3.py",
         "codigo_canonico": root / "src" / "canonical.py",
+        "codigo_modeling": root / "src" / "modeling" / "adapters" / "bayes.py",
     }
     for period in cfg["m3"]["periods"]:
         paths[f"m3_{period['name']}"] = raw / cfg["sources"][period["source_key"]]
