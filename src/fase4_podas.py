@@ -61,7 +61,7 @@ def main() -> None:
         directory.mkdir(parents=True, exist_ok=True)
     windows = pd.read_parquet(datasets / "forecast_windows.parquet")
     traditional = pd.read_parquet(datasets / "transition_intervals_tradicional.parquet")
-    pruning = load_pruning(raw, cfg["farm_aliases"], cfg["project"]["target_farms"])
+    pruning = load_pruning(raw, cfg)
     train_origins, val_origins = _split_origins(windows, cfg)
     all_origins = pd.concat([train_origins, val_origins], ignore_index=True)
     features = build_pruning_features(pruning, all_origins, cfg)

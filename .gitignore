@@ -6,6 +6,12 @@ venv/
 outputs/
 !outputs/.gitkeep
 
+# Datos de entrada: los xlsx son inmutables y versionados;
+# se ignoran copias temporales de trabajo y lockfiles de Excel.
+data/**/~$*.xlsx
+**/~$*.xlsx
+*.lock
+
 # Proyectos externos de solo lectura
 /Vision-artificial/
 /entrega_almer_*/

@@ -290,7 +290,7 @@ def _file_sha256(path: Path) -> str:
 def _dependency_hashes(root: Path, results_root: Path, week: str,
                        cfg: dict, model_manifest: dict) -> dict[str, str]:
     raw = root / cfg["paths"]["raw"]
-    history = root / cfg["vision"]["operational_history_path"]
+    history = root / cfg["paths"]["external"] / cfg["vision"]["operational_history_path"]
     paths = {
         "historial_cortes": history,
         "plano_siembra": raw / cfg["sources"]["plano_siembra"],
@@ -431,7 +431,7 @@ def _latest_week(results_root: Path) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--semana", help="Semana visual SNN; por defecto usa la ultima disponible")
-    parser.add_argument("--input", type=Path, help="Raiz alternativa de input/Resultados")
+    parser.add_argument("--input", type=Path, help="Raiz alternativa de data/vision/Resultados")
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[1]
@@ -441,7 +441,7 @@ def main() -> None:
     if cfg["vision"].get("conteo_co_semantics") != "CORTE_INMEDIATO_VISUAL":
         raise ValueError("La semantica de conteo_CO visual no esta confirmada")
     raw = root / cfg["paths"]["raw"]
-    results_root = args.input or root / cfg["vision"]["results_path"]
+    results_root = args.input or root / cfg["paths"]["vision"] / cfg["vision"]["results_path"]
     week = args.semana.upper() if args.semana else _latest_week(results_root)
     alpha = float(cfg["m3"]["baseline_ingress"])
 
@@ -466,7 +466,7 @@ def main() -> None:
         _publish_latest(runs, run_id)
         print(f"Corrida ya existente: {run_dir}")
         return
-    beds = load_bed_validity(raw, cfg["farm_aliases"], cfg["project"]["target_farms"])
+    beds = load_bed_validity(raw, cfg)
     counts, aggregate_qa = aggregate_vision_counts(videos, beds)
     qa = pd.concat([qa, aggregate_qa], ignore_index=True)
     if counts.empty:
@@ -478,7 +478,7 @@ def main() -> None:
     m3_daily["estado_modelo"] = "DISPONIBLE"
     m3_daily["motivo"] = ""
 
-    history_path = root / cfg["vision"]["operational_history_path"]
+    history_path = root / cfg["paths"]["external"] / cfg["vision"]["operational_history_path"]
     history = load_operational_history(history_path, cfg)
     windows = build_operational_windows(counts, int(cfg["forecast"]["horizon_days"]))
     feature_frame = build_supervised_dataset(

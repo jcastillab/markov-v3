@@ -24,10 +24,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-RAW = ROOT / "data" / "raw"
-OUT = ROOT / "outputs" / "data_quality"
+CFG = yaml.safe_load((ROOT / "config" / "pipeline.yaml").read_text(encoding="utf-8"))
+RAW = ROOT / CFG["paths"]["raw"]
+OUT = ROOT / CFG["paths"]["outputs"] / "data_quality"
 
 # Claves candidatas para prueba de duplicados por fuente (prompt seccion 26)
 KEYS = {
@@ -122,7 +124,7 @@ def perfilar_hoja(xlsx: Path, sheet: str, df: pd.DataFrame) -> tuple[dict, list[
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     # Excel creates lock files next to workbooks while they are open.
-    xlsxs = sorted(p for p in RAW.glob("*.xlsx") if not p.name.startswith("~$"))
+    xlsxs = sorted(p for p in RAW.rglob("*.xlsx") if not p.name.startswith("~$"))
     if not xlsxs:
         print("No hay xlsx en data/raw", file=sys.stderr)
         return 1
@@ -130,8 +132,8 @@ def main() -> int:
     global HASHES
     HASHES = {p.name: sha256(p) for p in xlsxs}
     pd.DataFrame(
-        [{"archivo": k, "sha256": v,
-          "bytes": (RAW / k).stat().st_size} for k, v in HASHES.items()]
+        [{"archivo": p.relative_to(RAW).as_posix(), "sha256": sha256(p),
+          "bytes": p.stat().st_size} for p in xlsxs]
     ).to_csv(OUT / "hashes_fuentes.csv", index=False)
 
     filas, columnas = [], []

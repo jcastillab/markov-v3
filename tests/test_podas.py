@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_pruning_contract_excludes_estimated_and_normalizes_destinations():
     cfg = load_config(ROOT / "config" / "pipeline.yaml")
-    pruning = load_pruning(ROOT / "data" / "raw", cfg["farm_aliases"], cfg["project"]["target_farms"])
+    pruning = load_pruning(ROOT / "data" / "raw", cfg)
     assert len(pruning) > 0
     assert pruning["poda_total"].eq(pruning["poda_corte"] + pruning["poda_alineamiento"]).all()
     assert pruning[["poda_corte", "poda_alineamiento", "poda_total"]].ge(0).all().all()

@@ -23,8 +23,9 @@ import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-RAW = ROOT / "data" / "raw"
-OUT = ROOT / "outputs" / "data_quality"
+CFG = __import__("yaml").safe_load((ROOT / "config" / "pipeline.yaml").read_text(encoding="utf-8"))
+RAW = ROOT / CFG["paths"]["raw"]
+OUT = ROOT / CFG["paths"]["outputs"] / "data_quality"
 
 pd.set_option("display.width", 200)
 
@@ -52,10 +53,10 @@ def main() -> int:
         # ------------------------------------------------------------------
         sec(f, "1. Nombres de finca y bloque por fuente")
 
-        cc = pd.read_excel(RAW / "conteos_vs_cortes_multifinca.xlsx")
-        camas = pd.read_excel(RAW / "camas_muestreadas_semana.xlsx")
-        plano = pd.read_excel(RAW / "plano_siembra.xlsx")
-        podas = pd.read_excel(RAW / "Podas 10.xlsx")
+        cc = pd.read_excel(RAW / CFG["sources"]["conteos_cortes"])
+        camas = pd.read_excel(RAW / CFG["sources"]["camas_muestreadas"])
+        plano = pd.read_excel(RAW / CFG["sources"]["plano_siembra"])
+        podas = pd.read_excel(RAW / CFG["sources"]["podas"])
 
         fincas = []
         for nombre, df, col in [
@@ -160,8 +161,8 @@ def main() -> int:
         # ------------------------------------------------------------------
         sec(f, "5. Clima: estaciones, formatos y solape")
         est = []
-        for anio in ["2025", "2026"]:
-            df = pd.read_excel(RAW / f"{anio}.xlsx")
+        for anio, key in [("2025", "clima_2025"), ("2026", "clima_2026")]:
+            df = pd.read_excel(RAW / CFG["sources"][key])
             est.append((anio, df))
             f.write(f"\n### {anio}.xlsx ({len(df)} filas)\n\n")
             f.write(f"Estaciones: {df['IdEstacion'].nunique()} unicas\n\n")
@@ -203,9 +204,9 @@ def main() -> int:
             return cod
 
         cod_abril = codigos_tradicional(
-            RAW / "FENOLOGIAS ABRIL FREEDOM.xlsx", ["Abril", "Junio"])
+            RAW / CFG["sources"]["fenologia_abril"], ["Abril", "Junio"])
         cod_julio = codigos_tradicional(
-            RAW / "FENOLOGIAS JULIO FREEDOM.xlsx", ["JULIO"])
+            RAW / CFG["sources"]["fenologia_julio"], ["JULIO"])
         f.write("\n### FENOLOGIAS ABRIL/JUNIO\n\n")
         tabla_md(f, pd.DataFrame(
             sorted(cod_abril.items(), key=lambda x: -x[1]),
@@ -219,7 +220,7 @@ def main() -> int:
         sec(f, "6b. Codigos P32 (Fenologias13.08Final-1)")
         p32_codes: dict[str, int] = {}
         p32_meta = []
-        xl = pd.ExcelFile(RAW / "Fenologias13.08Final-1.xlsx")
+        xl = pd.ExcelFile(RAW / CFG["sources"]["fenologia_p32"])
         for h in ["Garbanzo", "Rayando 1", "Separando S", "Definiendo P"]:
             raw = xl.parse(h, header=None)
             p32_meta.append({"hoja": h, "filas": raw.shape[0],

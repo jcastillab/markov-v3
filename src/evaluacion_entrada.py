@@ -104,8 +104,8 @@ def _read_input(path: Path, cfg: dict, template: pd.DataFrame, raw: Path) -> pd.
         if col in out:
             out[col] = out[col].fillna(default)
 
-    sampled = load_sampled_beds(raw, cfg["farm_aliases"], cfg["project"]["target_farms"])
-    beds = load_bed_validity(raw, cfg["farm_aliases"], cfg["project"]["target_farms"])
+sampled = load_sampled_beds(raw, cfg)
+    beds = load_bed_validity(raw, cfg)
     active = active_beds_by_date(beds, out["fecha"])
     out = attach_extrapolation(out, sampled, active, strict=False)
     origins = (out[out["es_fecha_conteo"]].sort_values("fecha")
@@ -428,5 +428,7 @@ def evaluate_input(root: Path, input_path: Path) -> tuple[Path, Path]:
 
 if __name__ == "__main__":
     root = Path(__file__).resolve().parents[1]
-    input_path = Path(sys.argv[1]) if len(sys.argv) > 1 else root / "resultados acutuales/conteos_vs_cortes_multifinca.xlsx"
+    input_path = Path(sys.argv[1]) if len(sys.argv) > 1 else (
+        root / load_config(root / "config/pipeline.yaml")["paths"]["external"] /
+        load_config(root / "config/pipeline.yaml")["vision"]["operational_history_path"])
     print("\n".join(map(str, evaluate_input(root, input_path))))

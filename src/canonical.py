@@ -46,8 +46,10 @@ def parse_iso_week(value: object, year: int = 2026) -> int | None:
     return year * 100 + int(match.group(1)) if match else None
 
 
-def load_conteos(raw: Path, aliases: dict, target_farms: list[str]) -> pd.DataFrame:
-    df = pd.read_excel(raw / "conteos_vs_cortes_multifinca.xlsx")
+def load_conteos(raw: Path, cfg: dict) -> pd.DataFrame:
+    aliases = cfg["farm_aliases"]
+    target_farms = cfg["project"]["target_farms"]
+    df = pd.read_excel(raw / cfg["sources"]["conteos_cortes"])
     df["finca"] = df["Finca"].map(lambda x: canonical_farm(x, aliases))
     df["bloque"] = df["Bloque"].map(canonical_block)
     df["fecha"] = parse_date(df["Fecha"])
@@ -69,8 +71,10 @@ def load_conteos(raw: Path, aliases: dict, target_farms: list[str]) -> pd.DataFr
     return out
 
 
-def load_sampled_beds(raw: Path, aliases: dict, target_farms: list[str]) -> pd.DataFrame:
-    df = pd.read_excel(raw / "camas_muestreadas_semana.xlsx")
+def load_sampled_beds(raw: Path, cfg: dict) -> pd.DataFrame:
+    aliases = cfg["farm_aliases"]
+    target_farms = cfg["project"]["target_farms"]
+    df = pd.read_excel(raw / cfg["sources"]["camas_muestreadas"])
     df = df[df["Semana"].astype(str).str.fullmatch(r"S\d+", na=False)].copy()
     df["finca"] = df["Finca"].map(lambda x: canonical_farm(x, aliases))
     df["bloque"] = df["Bloque"].map(canonical_block)
@@ -83,8 +87,10 @@ def load_sampled_beds(raw: Path, aliases: dict, target_farms: list[str]) -> pd.D
     return out
 
 
-def load_bed_validity(raw: Path, aliases: dict, target_farms: list[str]) -> pd.DataFrame:
-    df = pd.read_excel(raw / "plano_siembra.xlsx")
+def load_bed_validity(raw: Path, cfg: dict) -> pd.DataFrame:
+    aliases = cfg["farm_aliases"]
+    target_farms = cfg["project"]["target_farms"]
+    df = pd.read_excel(raw / cfg["sources"]["plano_siembra"])
     df["finca"] = df["Finca"].map(lambda x: canonical_farm(x, aliases))
     df["bloque"] = df["Bloque"].map(canonical_block)
     df["cama_id"] = df["Cama"].map(canonical_block)
@@ -121,8 +127,10 @@ def active_beds_by_date(beds: pd.DataFrame, dates: pd.Series) -> pd.DataFrame:
     return out
 
 
-def load_pruning(raw: Path, aliases: dict, target_farms: list[str]) -> pd.DataFrame:
-    df = pd.read_excel(raw / "Podas 10.xlsx")
+def load_pruning(raw: Path, cfg: dict) -> pd.DataFrame:
+    aliases = cfg["farm_aliases"]
+    target_farms = cfg["project"]["target_farms"]
+    df = pd.read_excel(raw / cfg["sources"]["podas"])
     df["finca"] = df["Finca"].map(lambda x: canonical_farm(x, aliases))
     df["bloque"] = df["Block"].map(canonical_block)
     df["fecha"] = parse_date(df["Fecha"])
@@ -142,10 +150,10 @@ def load_pruning(raw: Path, aliases: dict, target_farms: list[str]) -> pd.DataFr
 def build_fact_bloque_dia(cfg: dict, raw: Path) -> pd.DataFrame:
     farms = cfg["project"]["target_farms"]
     aliases = cfg["farm_aliases"]
-    counts = load_conteos(raw, aliases, farms)
-    sampled = load_sampled_beds(raw, aliases, farms)
-    beds = load_bed_validity(raw, aliases, farms)
-    pruning = load_pruning(raw, aliases, farms)
+    counts = load_conteos(raw, cfg)
+    sampled = load_sampled_beds(raw, cfg)
+    beds = load_bed_validity(raw, cfg)
+    pruning = load_pruning(raw, cfg)
 
     fact = counts.sort_values(["finca", "bloque", "fecha"]).copy()
     active = active_beds_by_date(beds, fact["fecha"])
@@ -259,7 +267,7 @@ def build_dimensions(cfg: dict, raw: Path, fact: pd.DataFrame) -> dict[str, pd.D
     dim_fecha["inicio_semana"] = dim_fecha["fecha"] - pd.to_timedelta(
         dim_fecha["dia_semana"], unit="D")
     dim_fecha["fin_semana"] = dim_fecha["inicio_semana"] + pd.Timedelta(days=6)
-    dim_cama = load_bed_validity(raw, aliases, farms).rename(
+    dim_cama = load_bed_validity(raw, cfg).rename(
         columns={"finca": "finca_id", "bloque": "bloque_id"})
     return {"dim_finca": dim_finca.reset_index(drop=True),
             "dim_bloque": dim_bloque.reset_index(drop=True),

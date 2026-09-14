@@ -12,24 +12,28 @@ project:
 
 paths:
   raw: data/raw
+  external: data/external
+  vision: data/vision
   outputs: outputs
   docs: docs
+  archive: archive
 
 # --------------------------------------------------------------------------
 # Fuentes de datos (archivos en data/raw)
 # --------------------------------------------------------------------------
 sources:
-  conteos_cortes: conteos_vs_cortes_multifinca.xlsx
-  camas_muestreadas: camas_muestreadas_semana.xlsx
-  plano_siembra: plano_siembra.xlsx
-  fenologia_abril: FENOLOGIAS ABRIL FREEDOM.xlsx
-  fenologia_julio: FENOLOGIAS JULIO FREEDOM.xlsx
-  fenologia_p32: Fenologias13.08Final-1.xlsx
-  podas: Podas 10.xlsx
-  clima_2025: 2025.xlsx
-  clima_2026: 2026.xlsx
-  calendario: calendario.xlsx
-  resumen_cortes: resumen_cortes_reales.xlsx
+  # Rutas relativas a paths.raw (data/raw)
+  conteos_cortes: historico/conteos_vs_cortes_multifinca.xlsx
+  camas_muestreadas: historico/camas_muestreadas_semana.xlsx
+  plano_siembra: historico/plano_siembra.xlsx
+  podas: historico/Podas 10.xlsx
+  fenologia_abril: fenologia/FENOLOGIAS ABRIL FREEDOM.xlsx
+  fenologia_julio: fenologia/FENOLOGIAS JULIO FREEDOM.xlsx
+  fenologia_p32: fenologia/Fenologias13.08Final-1.xlsx
+  clima_2025: clima/2025.xlsx
+  clima_2026: clima/2026.xlsx
+  calendario: auxiliares/calendario.xlsx
+  resumen_cortes: auxiliares/resumen_cortes_reales.xlsx
 
 forecast:
   horizon_days: 7
@@ -39,8 +43,10 @@ forecast:
 # Vision artificial: un CSV/video valido representa una cama diferente
 # --------------------------------------------------------------------------
 vision:
-  results_path: input/Resultados
-  operational_history_path: resultados acutuales/conteos_vs_cortes_multifinca.xlsx
+  # results_path es relativo a paths.vision (data/vision)
+  results_path: Resultados
+  # operational_history_path es relativo a paths.external (data/external)
+  operational_history_path: scoring/conteos_vs_cortes_multifinca.xlsx
   one_video_per_bed: true
   conteo_co_semantics: CORTE_INMEDIATO_VISUAL
   require_valid_video_metadata: true

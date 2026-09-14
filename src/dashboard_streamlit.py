@@ -386,7 +386,7 @@ tab_summary, tab_input, tab_rf, tab_bayes, tab_overfit, tab_features, tab_corr, 
 
 with tab_input:
     st.subheader("Evaluacion del archivo de entrada")
-    input_path = ROOT / "resultados acutuales/conteos_vs_cortes_multifinca.xlsx"
+    input_path = ROOT / dashboard_cfg["paths"]["external"] / dashboard_cfg["vision"]["operational_history_path"]
     input_daily, input_weekly = load_input_evaluation()
     input_factor_audit = load_input_factor_audit()
     if st.button("Ejecutar evaluacion de la entrada", disabled=not input_path.exists()):
