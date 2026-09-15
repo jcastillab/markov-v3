@@ -61,6 +61,22 @@ def test_weekly_entry_exposes_factor_audit_range():
     assert row.factor_extrapolacion_n == 1
 
 
+def test_weekly_future_week_keeps_full_forecast_without_real():
+    daily = pd.DataFrame({
+        "modelo": ["M"] * 7, "finca": ["A"] * 7, "bloque": ["1"] * 7,
+        "fecha_origen": pd.Timestamp("2026-08-31"),
+        "fecha_objetivo": pd.date_range("2026-09-07", periods=7),
+        "semana_proyeccion": 202637, "real": [None] * 7,
+        "proyectado": [10, 11, 12, 13, 14, 15, 16],
+    })
+    row = _weekly(daily).iloc[0]
+    assert row.estado_evaluacion == "NO EVALUABLE"
+    assert pd.isna(row.real)
+    assert row.proyectado == 91
+    assert row.indicador == "SIN REAL"
+    assert row.dias_reales == 0
+
+
 def test_entry_window_uses_last_count_and_next_monday_to_sunday():
     dates = pd.date_range("2026-05-04", "2026-05-17")
     fact = pd.DataFrame({

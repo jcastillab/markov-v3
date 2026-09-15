@@ -167,6 +167,7 @@ def _status_style(value):
         "NO ACIERTO": "background-color: #ffc7ce",
         "PARCIAL": "background-color: #d9eaf7",
         "NO EVALUABLE": "background-color: #e7e7e7",
+        "SIN REAL": "background-color: #f2f2f2",
     }.get(value, "")
 
 
@@ -207,7 +208,7 @@ def external_farm_weekly(frame: pd.DataFrame) -> pd.DataFrame:
     result["estado_evaluacion"] = np.select(
         [result.dias_reales.eq(result.dias), result.dias_reales.gt(0)],
         ["COMPLETA", "PARCIAL"], default="NO EVALUABLE")
-    result.loc[result.estado_evaluacion.eq("NO EVALUABLE"), ["real", "proyectado", "diferencia", "error_abs", "razon_proyectado_real", "desviacion_pct", "indicador"]] = np.nan
+    result.loc[result.estado_evaluacion.eq("NO EVALUABLE"), ["real", "diferencia", "error_abs", "razon_proyectado_real", "desviacion_pct", "indicador"]] = np.nan
     return result
 
 
@@ -429,7 +430,7 @@ tab_summary, tab_input, tab_forecast, tab_rf, tab_bayes, tab_overfit, tab_featur
 
 with tab_input:
     st.subheader("Evaluacion del archivo de entrada")
-    st.caption("Muestra solo semanas con corte real disponible para contrastar modelos. La semana futura se consulta en 'Pronóstico futuro'.")
+    st.caption("Cubre hasta la ultima semana de data/vision/Resultados. La ultima fila (semana siguiente) es pronostico sin corte real y se muestra como 'SIN REAL'.")
     input_path = ROOT / dashboard_cfg["paths"]["external"] / dashboard_cfg["vision"]["operational_history_path"]
     input_daily, input_weekly = load_input_evaluation()
     input_factor_audit = load_input_factor_audit()

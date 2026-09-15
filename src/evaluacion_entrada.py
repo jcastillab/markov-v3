@@ -20,23 +20,25 @@ from openpyxl.styles import PatternFill
 from openpyxl.utils import get_column_letter
 
 try:
-    from canonical import (active_beds_by_date, build_forecast_windows,
-                           load_bed_validity, load_config, load_sampled_beds)
+    from canonical import (build_forecast_windows,
+                           load_bed_validity, load_config)
     from evaluation.metrics import metrics
     from models.bayes import CovariateHierarchicalNB, DirichletM3, HierarchicalNB
     from models.m3 import M3Matrix, _period_for_date, fit_m3, load_traditional_intervals, simulate
     from models.selection import estimator_from_spec
     from models.supervised import NegativeBinomialGLM, build_supervised_dataset, feature_groups
     from modeling.extrapolation import attach_extrapolation
+    from proyeccion_vision import aggregate_vision_counts, load_vision_videos
 except ModuleNotFoundError:
-    from src.canonical import (active_beds_by_date, build_forecast_windows,
-                               load_bed_validity, load_config, load_sampled_beds)
+    from src.canonical import (build_forecast_windows,
+                               load_bed_validity, load_config)
     from src.evaluation.metrics import metrics
     from src.models.bayes import CovariateHierarchicalNB, DirichletM3, HierarchicalNB
     from src.models.m3 import M3Matrix, _period_for_date, fit_m3, load_traditional_intervals, simulate
     from src.models.selection import estimator_from_spec
     from src.models.supervised import NegativeBinomialGLM, build_supervised_dataset, feature_groups
     from src.modeling.extrapolation import attach_extrapolation
+    from src.proyeccion_vision import aggregate_vision_counts, load_vision_videos
 
 
 MODEL_NAMES = (
@@ -58,7 +60,8 @@ MODEL_NAMES = (
 )
 
 
-def _read_input(path: Path, cfg: dict, template: pd.DataFrame, raw: Path) -> pd.DataFrame:
+def _read_input(path: Path, cfg: dict, template: pd.DataFrame, raw: Path,
+                results_root: Path) -> pd.DataFrame:
     source = pd.read_excel(path)
     required = {"Finca", "Bloque", "Fecha", "Cantidad", "semana", "conteo_RC",
                 "conteo_SS", "conteo_AP", "conteo_CO", "conteo_total"}
@@ -104,10 +107,20 @@ def _read_input(path: Path, cfg: dict, template: pd.DataFrame, raw: Path) -> pd.
         if col in out:
             out[col] = out[col].fillna(default)
 
-    sampled = load_sampled_beds(raw, cfg)
+# La escala de muestreo proviene de la consolidacion de camas de
+    # data/vision/Resultados (cubre S17-S36), no del Excel historico de camas
+    # que solo llega a S32. Asi las semanas 33-36 obtienen factor valido.
+    videos, _ = load_vision_videos(results_root, cfg)
     beds = load_bed_validity(raw, cfg)
-    active = active_beds_by_date(beds, out["fecha"])
-    out = attach_extrapolation(out, sampled, active, strict=False)
+    counts, _ = aggregate_vision_counts(videos, beds)
+    scale = (counts.groupby(["finca", "bloque", "semana_iso"], as_index=False)
+             .agg(camas_muestreadas=("camas_muestreadas", "first"),
+                  camas_activas=("camas_activas", "first")))
+    out = attach_extrapolation(
+        out,
+        scale[["finca", "bloque", "semana_iso", "camas_muestreadas"]],
+        scale[["finca", "bloque", "semana_iso", "camas_activas"]],
+        strict=False)
     origins = (out[out["es_fecha_conteo"]].sort_values("fecha")
                .groupby(["finca", "bloque", "semana_iso"], as_index=False).tail(1)
                [["finca", "bloque", "semana_iso", "fecha", "conteo_RC", "conteo_SS",
@@ -304,9 +317,15 @@ def _weekly(daily: pd.DataFrame) -> pd.DataFrame:
             status = "PARCIAL"
         else:
             status = "NO EVALUABLE"
+        # En semanas sin real (futuro) se conserva el pronostico completo;
+        # en COMPLETA/PARCIAL el proyectado compara solo los dias reales.
+        if len(observed_dates):
+            proyectado = observed["proyectado"].sum(min_count=1)
+        else:
+            proyectado = group["proyectado"].sum(min_count=1)
         rows.append(dict(zip(keys, key)) | {
             "real": observed["real"].sum(min_count=1),
-            "proyectado": observed["proyectado"].sum(min_count=1),
+            "proyectado": proyectado,
             "dias": len(target_dates),
             "dias_reales": len(observed_dates),
             "estado_evaluacion": status,
@@ -319,7 +338,7 @@ def _weekly(daily: pd.DataFrame) -> pd.DataFrame:
     result["error_abs"] = result.diferencia.abs()
     result["razon_proyectado_real"] = np.where(result.real.ne(0), result.proyectado / result.real, np.nan)
     result["desviacion_pct"] = result.razon_proyectado_real - 1
-    result.loc[result.estado_evaluacion.eq("NO EVALUABLE"), ["real", "proyectado", "diferencia", "error_abs", "razon_proyectado_real", "desviacion_pct"]] = np.nan
+    result.loc[result.estado_evaluacion.eq("NO EVALUABLE"), ["real", "diferencia", "error_abs", "razon_proyectado_real", "desviacion_pct"]] = np.nan
     result["indicador"] = result.razon_proyectado_real.map(_status)
     return result
 
@@ -359,7 +378,9 @@ def evaluate_input(root: Path, input_path: Path) -> tuple[Path, Path]:
     out = root / cfg["paths"]["outputs"]
     datasets, evaluation = out / "datasets", out / "evaluation"
     template = pd.read_parquet(datasets / "fact_bloque_dia.parquet")
-    external_fact = _read_input(input_path, cfg, template, root / cfg["paths"]["raw"])
+    results_root = root / cfg["paths"]["vision"] / cfg["vision"]["results_path"]
+    external_fact = _read_input(input_path, cfg, template, root / cfg["paths"]["raw"],
+                                results_root)
     missing_scale = external_fact["es_fecha_conteo"] & ~external_fact["escala_disponible"]
     scoring_fact = external_fact.loc[~missing_scale].copy()
     windows = build_forecast_windows(scoring_fact, int(cfg["forecast"]["horizon_days"]))
@@ -412,11 +433,12 @@ def evaluate_input(root: Path, input_path: Path) -> tuple[Path, Path]:
         "weekly_rows": int(len(weekly)),
         "partial_week_rows": int(weekly["estado_evaluacion"].eq("PARCIAL").sum()),
         "complete_week_rows": int(weekly["estado_evaluacion"].eq("COMPLETA").sum()),
-        "input_rows_without_extrapolation": int(missing_scale.sum()),
+"input_rows_without_extrapolation": int(missing_scale.sum()),
         "input_keys_without_extrapolation": int(
             external_fact.loc[missing_scale, ["finca", "bloque", "semana_iso"]]
             .drop_duplicates().shape[0]),
         "extrapolation_policy": "exclude_origin_without_valid_scale",
+        "factor_source": str(results_root.relative_to(root)),
         "factor_audit_file": str(factor_audit_path.relative_to(root)),
         "factor_audit_rows": int(len(factor_audit)),
         "factor_audit_missing": int(factor_audit.factores_faltantes.sum()),

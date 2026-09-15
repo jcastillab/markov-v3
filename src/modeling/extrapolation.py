@@ -18,13 +18,17 @@ def attach_extrapolation(frame: pd.DataFrame, sampled: pd.DataFrame,
                          active: pd.DataFrame, strict: bool = True) -> pd.DataFrame:
     """Agrega camas y factor validado a un frame de entrada.
 
-    ``sampled`` debe estar agregado por finca-bloque-semana y ``active`` por
-    finca-bloque-fecha. Si una clave no tiene escala válida se lanza un error
-    con una muestra de las claves afectadas.
+    ``sampled`` debe estar agregado por finca-bloque-semana. ``active`` puede
+    venir agregado por finca-bloque-fecha (con columna ``fecha``) o por
+    finca-bloque-semana (sin ``fecha``). Si una clave no tiene escala valida se
+    lanza un error con una muestra de las claves afectadas.
     """
     result = frame.copy()
     result = result.merge(sampled, on=KEYS_WEEK, how="left", validate="many_to_one")
-    result = result.merge(active, on=KEYS_DATE, how="left", validate="one_to_one")
+    if "fecha" in active.columns:
+        result = result.merge(active, on=KEYS_DATE, how="left", validate="one_to_one")
+    else:
+        result = result.merge(active, on=KEYS_WEEK, how="left", validate="many_to_one")
     result["camas_muestreadas"] = pd.to_numeric(result["camas_muestreadas"], errors="coerce")
     result["camas_activas"] = pd.to_numeric(result["camas_activas"], errors="coerce")
     invalid = (result["camas_muestreadas"].isna() |

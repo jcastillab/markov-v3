@@ -33,3 +33,14 @@ def test_missing_scale_is_rejected_with_keys():
             pd.DataFrame(columns=["finca", "bloque", "semana_iso", "camas_muestreadas"]),
             pd.DataFrame(columns=["finca", "bloque", "fecha", "camas_activas"]),
         )
+
+
+def test_active_by_week_supported():
+    result = attach_extrapolation(
+        _frame(),
+        pd.DataFrame({"finca": ["ALMER"], "bloque": ["1"],
+                      "semana_iso": [202636], "camas_muestreadas": [2]}),
+        pd.DataFrame({"finca": ["ALMER"], "bloque": ["1"],
+                      "semana_iso": [202636], "camas_activas": [4]}),
+    )
+    assert result["factor_extrapolacion"].tolist() == [2.0, 2.0]
