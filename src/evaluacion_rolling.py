@@ -44,10 +44,15 @@ def _frame_rows(frame, current, model, pred, family, features):
 def _m3_predictions(windows, intervals, cfg, model="E00_M3_BASE_ROLLING", alpha=None):
     alpha = cfg["m3"]["baseline_ingress"] if alpha is None else alpha
     rows = []
+    matrix_cache = {}
     for _, row in windows.iterrows():
         origin = pd.Timestamp(row.fecha_origen)
         period = _period_for_date(origin, cfg["m3"]["periods"])
-        matrix = fit_m3(intervals, row.finca, period, origin)
+        key = (row.finca, period, origin)
+        matrix = matrix_cache.get(key)
+        if matrix is None:
+            matrix = fit_m3(intervals, row.finca, period, origin)
+            matrix_cache[key] = matrix
         x0 = np.array([row.conteo_RC_t0, row.conteo_SS_t0, row.conteo_AP_t0], float)
         lead = (pd.Timestamp(row.fecha_objetivo) - origin).days
         result = simulate(matrix, x0, lead, alpha).iloc[-1]
@@ -176,13 +181,22 @@ def _bayes_predictions(frame, cfg, evaluation_start):
 
 def _dirichlet_predictions(frame, intervals, cfg, evaluation_start):
     rows = []
+    prior_cache = {}
     for origin, current, _ in _origins(frame, cfg, evaluation_start):
         current_frame = frame.loc[current].copy()
         predictions = []
         for position, row in current_frame.iterrows():
             period = _period_for_date(origin, cfg["m3"]["periods"])
-            prior = fit_m3(intervals, row.finca, period, origin)
-            data = intervals[(intervals.finca == row.finca) & (intervals.periodo == period) & (intervals.fecha <= origin)]
+            key = (row.finca, period, origin)
+            cached = prior_cache.get(key)
+            if cached is None:
+                prior = fit_m3(intervals, row.finca, period, origin)
+                data = intervals[(intervals.finca == row.finca) &
+                                 (intervals.periodo == period) &
+                                 (intervals.fecha <= origin)]
+                cached = (prior, data)
+                prior_cache[key] = cached
+            prior, data = cached
             posterior = DirichletM3(data, prior, cfg["bayes"]["dirichlet_prior_strength"], cfg["bayes"]["seed"] + int(position))
             x0 = np.array([row.RC_t0, row.SS_t0, row.AP_t0], float)
             lead = (pd.Timestamp(row.fecha_objetivo) - origin).days

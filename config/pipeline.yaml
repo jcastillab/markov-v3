@@ -77,7 +77,7 @@ operational:
         max_features: 0.5
         criterion: squared_error
         random_state: 42
-        n_jobs: 1
+        n_jobs: -1
     rf_h1_h7:
       name: RF_H1_H7_FENO_OPERATIONAL
       family: RF_HORIZON
@@ -90,7 +90,7 @@ operational:
         max_features: sqrt
         criterion: squared_error
         random_state: 42
-        n_jobs: 1
+        n_jobs: -1
 
 # --------------------------------------------------------------------------
 # Homologacion de fincas: nombre_fuente -> finca_canonica
@@ -231,7 +231,8 @@ random_forest:
   criterion_grid: [squared_error, poisson]
   parallel:
     n_jobs: auto
-    reserve_cpus: 1
+    model_n_jobs: -1
+    reserve_cpus: 0
     reserve_memory_gb: 1.0
     estimated_memory_per_worker_gb: 0.5
     backend: processes

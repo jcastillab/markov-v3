@@ -17,6 +17,9 @@ data/**/~$*.xlsx
 /entrega_almer_*/
 /integracion_externa/Vision-artificial/
 /integracion_externa/entrega_almer_*/
+/Conteo rosas.zip
+/integracion_conteo_rosas.zip
+/integracion_conteo_rosas/
 
 # Python
 __pycache__/

@@ -39,19 +39,18 @@ def main() -> int:
             errors.append(f"Suma global {global_sum} != suma de bloques {block_sum}")
 
     registry = ROOT / cfg["operational"]["bundle_registry"]
+    pointer = registry / "active.json"
+    active = {}
+    if pointer.exists():
+        import json
+        payload = json.loads(pointer.read_text(encoding="utf-8"))
+        active = {family: value["version"] for family, value in
+                  payload.get("families", {}).items() if "version" in value}
     for family in FAMILY_ORDER:
-        versions = {}
-        if registry.is_dir():
-            for version_dir in registry.iterdir():
-                mf = version_dir / "manifest.json"
-                if mf.is_file():
-                    import json
-                    fam = json.loads(mf.read_text(encoding="utf-8")).get("family")
-                    if fam == family:
-                        versions[family] = version_dir.name
-        if family in versions:
-            load_bundle(registry, versions[family])
-            print(f"OK bundle {family}: {versions[family]}")
+        version = active.get(family)
+        if version:
+            load_bundle(registry, version)
+            print(f"OK bundle {family}: {version}")
         else:
             print(f"AVISO bundle {family}: no presente")
 

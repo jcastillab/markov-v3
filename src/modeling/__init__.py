@@ -8,7 +8,8 @@ from .adapters import (
     RFAdapter,
     RFHorizonAdapter,
 )
-from .bundle import load_bundle, publish_pointer, read_pointer, save_bundle
+from .bundle import (load_bundle, publish_family_pointers, publish_pointer,
+                     read_pointer, save_bundle)
 from .contracts import ModelAdapter, nonnegative, select_features, train_target
 from .extrapolation import attach_extrapolation
 from .registry import FAMILY_ORDER, OPERATIONAL_MODELS, best_by_family
@@ -28,6 +29,7 @@ __all__ = [
     "load_bundle",
     "nonnegative",
     "publish_pointer",
+    "publish_family_pointers",
     "read_pointer",
     "save_bundle",
     "select_features",

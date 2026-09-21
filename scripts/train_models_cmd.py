@@ -1,8 +1,7 @@
-"""Entrena y congela los modelos operacionales (mejor modelo por familia)."""
+"""Compatibilidad: usa ``scripts/modelos.py entrenar``."""
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -11,16 +10,9 @@ PY = sys.executable
 
 
 def main() -> int:
-    steps = [
-        [PY, str(ROOT / "scripts/train_models.py")],
-        [PY, str(ROOT / "src/entrenar_modelos_operacionales.py")],
-    ]
-    for command in steps:
-        print(f"\n=== {' '.join(command[-1:])} ===")
-        result = subprocess.run(command, cwd=ROOT)
-        if result.returncode != 0:
-            return result.returncode
-    return 0
+    command = [PY, str(ROOT / "scripts" / "modelos.py"), "entrenar"]
+    command += sys.argv[1:]
+    return __import__("subprocess").run(command, cwd=ROOT).returncode
 
 
 if __name__ == "__main__":

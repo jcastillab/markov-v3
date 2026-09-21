@@ -288,10 +288,20 @@ def _file_sha256(path: Path) -> str:
 
 
 def _registry_versions(registry: Path) -> dict[str, str]:
-    """Ultima version de cada familia presente en el registro de bundles."""
+    """Versiones publicadas por familia, con fallback historico."""
     versions: dict[str, str] = {}
     if not registry.is_dir():
         return versions
+    pointer = registry / "active.json"
+    if pointer.is_file():
+        payload = json.loads(pointer.read_text(encoding="utf-8"))
+        families = payload.get("families", {})
+        if isinstance(families, dict):
+            versions.update({family: value["version"]
+                             for family, value in families.items()
+                             if isinstance(value, dict) and "version" in value})
+        if versions:
+            return versions
     for version_dir in sorted(registry.iterdir()):
         manifest_path = version_dir / "manifest.json"
         if manifest_path.is_file():

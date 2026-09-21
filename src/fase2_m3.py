@@ -16,11 +16,17 @@ from models.m3 import _period_for_date, fit_m3, load_traditional_intervals, simu
 
 
 def predict_window(row: pd.Series, intervals: pd.DataFrame, cfg: dict,
-                   alpha: float) -> list[dict]:
+                   alpha: float, matrix_cache: dict | None = None) -> list[dict]:
     origin = pd.Timestamp(row["fecha_origen"])
     target = pd.Timestamp(row["fecha_objetivo"])
     period = _period_for_date(origin, cfg["m3"]["periods"])
-    matrix = fit_m3(intervals, row["finca"], period, max_date=origin)
+    cache_key = (row["finca"], period, origin)
+    if matrix_cache is not None and cache_key in matrix_cache:
+        matrix = matrix_cache[cache_key]
+    else:
+        matrix = fit_m3(intervals, row["finca"], period, max_date=origin)
+        if matrix_cache is not None:
+            matrix_cache[cache_key] = matrix
     x0 = np.array([row["conteo_RC_t0"], row["conteo_SS_t0"], row["conteo_AP_t0"]], float)
     lead = (target - origin).days
     sim = simulate(matrix, x0, lead, alpha)
@@ -38,10 +44,12 @@ def predict_window(row: pd.Series, intervals: pd.DataFrame, cfg: dict,
 
 
 def run_experiment(windows: pd.DataFrame, intervals: pd.DataFrame, cfg: dict,
-                   experiment_id: str, alpha: float, eligible: pd.Series) -> tuple[pd.DataFrame, dict]:
+                   experiment_id: str, alpha: float, eligible: pd.Series,
+                   matrix_cache: dict | None = None) -> tuple[pd.DataFrame, dict]:
     rows = []
+    matrix_cache = matrix_cache if matrix_cache is not None else {}
     for _, row in windows[eligible].iterrows():
-        item = predict_window(row, intervals, cfg, alpha)[0]
+        item = predict_window(row, intervals, cfg, alpha, matrix_cache)[0]
         item["experiment_id"] = experiment_id
         rows.append(item)
     pred = pd.DataFrame(rows)
@@ -66,8 +74,10 @@ def main() -> None:
     val_mask = windows["ventana_evaluable"] & pd.Series(valid, index=windows.index)
     grid = cfg["m3"]["ingress_grid"]
     train_scores = []
+    matrix_cache = {}
     for alpha in grid:
-        _, score = run_experiment(windows, intervals, cfg, "", alpha, train_mask)
+        _, score = run_experiment(windows, intervals, cfg, "", alpha, train_mask,
+                                   matrix_cache)
         train_scores.append({"alpha_ingreso_RC": alpha, **score, "split": "TRAIN"})
     alpha_best = min(train_scores, key=lambda x: x["wape"])["alpha_ingreso_RC"]
     predictions = []
@@ -81,7 +91,8 @@ def main() -> None:
                 matrix_rows.append(audit_row.to_dict())
     baseline_alpha = float(cfg["m3"]["baseline_ingress"])
     for experiment_id, alpha in [("E00_M3_BASE", baseline_alpha), ("E01_M3_INGRESO_CALIBRADO", alpha_best)]:
-        pred, score = run_experiment(windows, intervals, cfg, experiment_id, alpha, val_mask)
+        pred, score = run_experiment(windows, intervals, cfg, experiment_id, alpha, val_mask,
+                                     matrix_cache)
         pred.to_csv(pred_dir / f"{experiment_id}.csv", index=False)
         metric_rows.append({"experiment_id": experiment_id, "split": "VALIDATION",
                             "alpha_ingreso_RC": alpha, "causal": True, **score})
@@ -91,7 +102,7 @@ def main() -> None:
     pd.DataFrame(matrix_rows).to_csv(model_dir / "m3_matrix_audit.csv", index=False)
     pd.concat(predictions, ignore_index=True).to_csv(pred_dir / "predictions_m3_validation.csv", index=False)
     operational, _ = run_experiment(windows, intervals, cfg, "E00_M3_BASE", baseline_alpha,
-                                    pd.Series(True, index=windows.index))
+                                    pd.Series(True, index=windows.index), matrix_cache)
     operational.to_csv(pred_dir / "E00_M3_BASE_operational.csv", index=False)
     intervals.groupby(["finca", "periodo", "estado_origen", "estado_destino", "evento"], as_index=False).size().to_csv(
         model_dir / "m3_transition_audit_counts.csv", index=False)

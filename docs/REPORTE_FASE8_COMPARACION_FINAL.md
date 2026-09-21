@@ -15,8 +15,8 @@ Los experimentos retrospectivos P32 y las poblaciones o escalas distintas quedan
 | GLM_NB_FENO_ROLLING | 26.69% | 24.72%-28.94% | challenger |
 | RF_OPT_FENO_CLIMA_ROLLING | 26.91% | 24.87%-29.17% | challenger |
 | GLM_NB_FENO_CLIMA_ROLLING | 28.76% | 27.17%-30.53% | challenger |
-| MODELO_SELECCIONADO_ROLLING | 28.92% | 26.48%-31.62% | challenger |
 | RF_OPT_FENO_PODA_CLIMA_ROLLING | 28.92% | 26.48%-31.62% | challenger |
+| MODELO_SELECCIONADO_ROLLING | 28.92% | 26.48%-31.62% | challenger |
 | GLM_NB_FENO_PODA_CLIMA_ROLLING | 29.83% | 26.55%-33.65% | challenger |
 | GLM_NB_FENO_PODA_ROLLING | 31.97% | 27.14%-37.74% | challenger |
 | RF_OPT_FENO_PODA_ROLLING | 32.05% | 29.23%-35.36% | challenger |

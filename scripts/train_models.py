@@ -23,7 +23,7 @@ try:
     from models.supervised import build_supervised_dataset
     from modeling import (
         DirichletAdapter, GLMAdapter, HierarchicalNBAdapter, M3Adapter,
-        RFAdapter, RFHorizonAdapter, save_bundle, publish_pointer,
+        RFAdapter, RFHorizonAdapter, save_bundle, publish_family_pointers,
     )
 except ModuleNotFoundError:
     from src.canonical import load_config
@@ -31,7 +31,7 @@ except ModuleNotFoundError:
     from src.models.supervised import build_supervised_dataset
     from src.modeling import (
         DirichletAdapter, GLMAdapter, HierarchicalNBAdapter, M3Adapter,
-        RFAdapter, RFHorizonAdapter, save_bundle, publish_pointer,
+        RFAdapter, RFHorizonAdapter, save_bundle, publish_family_pointers,
     )
 
 
@@ -82,6 +82,7 @@ def main() -> None:
         adapters.append(dirichlet)
 
     artifacts = {}
+    versions = {}
     for adapter in adapters:
         artifact_path, frozen = save_bundle(adapter, registry, {
             "training_cutoff": (str(cutoff.date()) if cutoff is not None else
@@ -89,12 +90,12 @@ def main() -> None:
             "training_rows": int(len(frame)),
         })
         artifacts[frozen["family"]] = frozen
+        versions[frozen["family"]] = frozen["version"]
         print(f"{frozen['family']:16s} {frozen['name']:36s} version={frozen['version']}")
 
-    # Puntero a la version activa del mejor modelo de la familia principal (RF).
-    active_version = artifacts["RF"]["version"]
-    publish_pointer(registry, active_version, pointer)
-    print(f"\nPuntero activo -> {active_version}")
+    # Punteros explicitos por familia, sin seleccionar hashes por orden alfabetico.
+    publish_family_pointers(registry, versions, pointer)
+    print(f"\nPunteros activos por familia -> {pointer}")
     print(f"Familia principal: {artifacts['RF']['name']}")
 
 

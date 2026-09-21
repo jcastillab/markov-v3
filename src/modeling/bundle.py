@@ -97,6 +97,25 @@ def publish_pointer(registry: Path, version: str, pointer: Path) -> None:
     temporary.replace(pointer)
 
 
+def publish_family_pointers(registry: Path, versions: dict[str, str],
+                            pointer: Path) -> None:
+    """Publica un puntero explicito familia -> version de bundle."""
+    families = {}
+    for family, version in versions.items():
+        manifest_path = registry / version / "manifest.json"
+        if not manifest_path.exists():
+            raise FileNotFoundError(f"Falta manifest para {family}: {version}")
+        families[family] = {
+            "version": version,
+            "manifest_sha256": _sha256_bytes(manifest_path.read_bytes()),
+        }
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    temporary = pointer.with_name(f".{pointer.name}-{os.getpid()}.tmp")
+    temporary.write_text(json.dumps({"families": families}, indent=2),
+                         encoding="utf-8")
+    temporary.replace(pointer)
+
+
 def read_pointer(pointer: Path) -> dict:
     if not pointer.exists():
         raise FileNotFoundError(f"Falta puntero activo: {pointer}")
