@@ -24,7 +24,7 @@ configurado en `operational.minimum_history_days_28d`, los RF quedan como
 El entrenamiento y la prediccion son procesos separados. Primero se construyen
 los datasets de Fase 1 y los intervalos M3 de Fase 2. Luego se congelan los RF:
 
-```powershell
+```console
 .\.venv\Scripts\python.exe src\fase1_pipeline.py
 .\.venv\Scripts\python.exe src\fase2_m3.py
 .\.venv\Scripts\python.exe src\entrenar_modelos_operacionales.py
@@ -32,7 +32,7 @@ los datasets de Fase 1 y los intervalos M3 de Fase 2. Luego se congelan los RF:
 
 Opcionalmente se puede limitar la ultima fecha objetivo conocida:
 
-```powershell
+```console
 .\.venv\Scripts\python.exe src\entrenar_modelos_operacionales.py --cutoff 2026-08-09
 ```
 
@@ -46,13 +46,13 @@ anteriores.
 
 Para procesar automaticamente la ultima carpeta `SNN` disponible:
 
-```powershell
+```console
 .\.venv\Scripts\python.exe src\proyeccion_vision.py
 ```
 
 Para una semana concreta:
 
-```powershell
+```console
 .\.venv\Scripts\python.exe src\proyeccion_vision.py --semana S36
 ```
 
@@ -75,7 +75,7 @@ outputs/operational/<run_id>/
 
 ## Dashboard
 
-```powershell
+```console
 .\.venv\Scripts\python.exe -m streamlit run src\dashboard_streamlit.py
 ```
 

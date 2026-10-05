@@ -12,7 +12,7 @@
 
 Usar Python 3.12 desde la raiz del repositorio:
 
-```powershell
+```console
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
@@ -22,7 +22,7 @@ el pipeline. No se deben reemplazar durante una evaluacion externa.
 
 ## Construir artefactos historicos
 
-```powershell
+```console
 .\.venv\Scripts\python.exe src\fase1_pipeline.py
 .\.venv\Scripts\python.exe src\fase2_m3.py
 .\.venv\Scripts\python.exe src\fase3_p32.py
@@ -39,7 +39,7 @@ holdout rolling se conserva separado de la seleccion y de la entrada externa.
 
 ## Evaluar un archivo externo
 
-```powershell
+```console
 .\.venv\Scripts\python.exe src\evaluacion_entrada.py "resultados acutuales\conteos_vs_cortes_multifinca.xlsx"
 ```
 
@@ -55,10 +55,14 @@ marcadas como `PARCIAL`. Las semanas sin reales quedan como `NO EVALUABLE`.
 
 ## Abrir el dashboard
 
-```powershell
+```console
 .\.venv\Scripts\python.exe -m streamlit run src\dashboard_streamlit.py
 ```
 
 El dashboard separa validacion fija, holdout rolling y evaluacion externa. La
 entrada externa permite filtrar por modelo, finca, bloque y semana, y muestra
 semanas completas, parciales, aciertos, cercanas y no aciertos.
+
+La actualizacion del informe Excel se ejecuta desde Python mediante `pywin32`.
+En Windows requiere Microsoft Excel instalado; la dependencia se instala junto
+con `requirements.txt`. El flujo no genera ni ejecuta scripts de PowerShell.

@@ -6,38 +6,38 @@ Las fases historicas se conservan como implementacion interna y auditoria. La
 
 Consolidar RAW y construir datasets:
 
-```powershell
+```console
 .\.venv\Scripts\python.exe scripts\modelos.py consolidar
 ```
 
 Evaluar modelos con validacion temporal, rolling-origin y ranking:
 
-```powershell
+```console
 .\.venv\Scripts\python.exe scripts\modelos.py evaluar
 ```
 
 Entrenar y congelar bundles:
 
-```powershell
+```console
 .\.venv\Scripts\python.exe scripts\modelos.py entrenar --cutoff 2026-08-09
 ```
 
 Ejecutar todo el ciclo historico:
 
-```powershell
+```console
 .\.venv\Scripts\python.exe scripts\modelos.py todo --cutoff 2026-08-09
 ```
 
 Proyectar sin entrenar:
 
-```powershell
+```console
 .\.venv\Scripts\python.exe scripts\modelos.py operacional -- --semana S36
 ```
 
 Preparar todos los artefactos que consume el dashboard, incluida la pestaña
 `Nueva entrada` y la última corrida operacional:
 
-```powershell
+```console
 .\.venv\Scripts\python.exe scripts\modelos.py dashboard
 ```
 

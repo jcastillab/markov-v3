@@ -25,44 +25,44 @@ outputs/                   Generado (gitignored)
 
 ## Quickstart
 
-```powershell
+```console
 py -3.12 -m venv .venv
 .\.venv\Scripts\pip.exe install -r requirements.txt
 ```
 
 ### Pipeline historico (fases 0-8)
 
-```powershell
+```console
 .\.venv\Scripts\python.exe scripts\run_historical.py
 ```
 
 ### Entrenar y congelar modelos
 
-```powershell
+```console
 .\.venv\Scripts\python.exe scripts\train_models_cmd.py
 ```
 
 ### Proyectar la semana siguiente
 
-```powershell
+```console
 .\.venv\Scripts\python.exe scripts\run_operational.py
 ```
 
 ### Validar corrida e integridad
 
-```powershell
+```console
 .\.venv\Scripts\python.exe scripts\validate_run.py
 ```
 
 ### Todo de una vez
 
-```powershell
+```console
 .\.venv\Scripts\python.exe scripts\run_pipeline.py
 ```
 
 ### Dashboard
 
-```powershell
+```console
 .\.venv\Scripts\python.exe -m streamlit run src\dashboard_streamlit.py
 ```
 
@@ -97,7 +97,7 @@ formato aceptado y como agregar una semana nueva.
 
 ## Tests
 
-```powershell
+```console
 .\.venv\Scripts\python.exe -m pytest tests -q
 ```
 

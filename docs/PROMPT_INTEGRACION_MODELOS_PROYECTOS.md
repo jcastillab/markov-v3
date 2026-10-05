@@ -302,7 +302,7 @@ grandes, bases de datos, Parquet generados, credenciales ni salidas locales.
 Ejecuta, documenta y conserva el resultado de los comandos apropiados para
 los tres proyectos, por ejemplo:
 
-```powershell
+```console
 python -m pytest tests -q
 python -m pytest integracion_externa/Vision-artificial/tests -q
 python -m pytest integracion_externa/entrega_almer_20260826-2041 -q

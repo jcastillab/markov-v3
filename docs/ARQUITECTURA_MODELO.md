@@ -1340,25 +1340,25 @@ Para cada semana t:
 
 ## Entry point principal
 
-```powershell
+```console
 python -m modelo_unificado.fase16_cli configuracion_fase16.json
 ```
 
 ## Markov P32
 
-```powershell
+```console
 python -m modelo_unificado.markov_p32_cli configuracion_fase16.json
 ```
 
 ## Excel de escenarios de ingreso
 
-```powershell
+```console
 python -m modelo_unificado.excel_auditoria_cli configuracion_fase16.json
 ```
 
 ## Excel paso a paso
 
-```powershell
+```console
 python -m modelo_unificado.excel_detalle_modelos_cli configuracion_fase16.json
 ```
 
@@ -1366,13 +1366,13 @@ Este módulo aparece sin versionar en el ZIP auditado.
 
 ## Auditoría de Fase 16
 
-```powershell
+```console
 python -m modelo_unificado.fase16_auditoria_cli configuracion_fase16.json
 ```
 
 ## Tests
 
-```powershell
+```console
 python -m unittest discover -s tests
 ```
 
