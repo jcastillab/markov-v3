@@ -1,22 +1,18 @@
-"""Actualiza las tablas fuente del informe Excel conservando pivots y segmentadores.
-
-La actualizacion usa la automatizacion COM de Excel desde Python (Excel debe
-estar instalado en Windows). El archivo plantilla original no se modifica; el
-informe vigente se escribe en ``outputs/informe pronosticos.xlsx``.
-"""
+"""Genera un informe Excel de proyecciones con Python puro (openpyxl)."""
 
 from __future__ import annotations
 
-import shutil
 import sys
 from pathlib import Path
 
 import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-TEMPLATE = ROOT / "pronosticos_reentrenados_S17_S38_bloque.xlsx"
 MODELS = {
     "RF_H1_H7_FENO_ENTRADA",
     "RF_OPT_FENO_ENTRADA",
@@ -25,66 +21,40 @@ MODELS = {
 }
 
 
-TABLE_MAPPINGS = (
-    ("COMPARACION_SEMANAL", "Table1"),
-    ("COMPARACION_SEMANAL_BLOQUE", "Table2"),
-)
-
-
-def _update_excel_tables(excel_path: Path, sources: dict[str, pd.DataFrame]) -> None:
-    """Actualiza las tablas y pivots via Excel COM, sin generar scripts de shell."""
-    try:
-        from win32com.client import DispatchEx
-    except ImportError as exc:
-        raise RuntimeError(
-            "La actualizacion del informe requiere Excel y pywin32. "
-            "Instala las dependencias con: python -m pip install -r requirements.txt"
-        ) from exc
-
-    excel = target = None
-    saved = False
-    try:
-        excel = DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        target = excel.Workbooks.Open(str(excel_path.resolve()))
-        for sheet_name, table_name in TABLE_MAPPINGS:
-            frame = sources[sheet_name]
-            sheet = target.Worksheets.Item(sheet_name)
-            table = sheet.ListObjects.Item(table_name)
-            row_count, column_count = len(frame) + 1, len(frame.columns)
-            if column_count != table.ListColumns.Count:
-                raise ValueError(
-                    f"Columnas incompatibles en {sheet_name}: "
-                    f"fuente={column_count} tabla={table.ListColumns.Count}"
+def _write_report_workbook(path: Path, sources: dict[str, pd.DataFrame]) -> None:
+    """Escribe ambas tablas y formato básico sin Excel, COM ni plantilla propietaria."""
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    for index, (sheet_name, frame) in enumerate(sources.items(), start=1):
+        sheet = workbook.create_sheet(sheet_name)
+        headers = list(frame.columns)
+        sheet.append(headers)
+        for row in frame.itertuples(index=False, name=None):
+            sheet.append([
+                None if pd.isna(value) else
+                value.item() if hasattr(value, "item") else value
+                for value in row
+            ])
+        for cell in sheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="1F4E78")
+            cell.alignment = Alignment(horizontal="center")
+        if headers:
+            table = Table(displayName=f"Table{index}", ref=sheet.dimensions)
+            table.tableStyleInfo = TableStyleInfo(
+                name="TableStyleMedium2", showFirstColumn=False,
+                showLastColumn=False, showRowStripes=True, showColumnStripes=False,
+            )
+            sheet.add_table(table)
+            sheet.freeze_panes = "A2"
+            sheet.auto_filter.ref = sheet.dimensions
+            for column in sheet.columns:
+                values = [len(str(cell.value or "")) for cell in column]
+                sheet.column_dimensions[column[0].column_letter].width = min(
+                    max(max(values, default=0) + 2, 12), 34
                 )
-            table.Resize(sheet.Range(sheet.Cells(1, 1), sheet.Cells(row_count, column_count)))
-            if len(frame):
-                # Excel COM requiere un escalar para una celda y una matriz
-                # bidimensional para rangos de varias celdas.
-                values = tuple(
-                    tuple(
-                        None if pd.isna(value) else
-                        value.item() if hasattr(value, "item") else value
-                        for value in row
-                    )
-                    for row in frame.itertuples(index=False, name=None)
-                )
-                destination = sheet.Range(
-                    sheet.Cells(2, 1), sheet.Cells(row_count, column_count)
-                )
-                destination.Value2 = values[0][0] if len(values) == 1 and column_count == 1 else values
-        for sheet in target.Worksheets:
-            pivots = sheet.PivotTables()
-            for index in range(1, pivots.Count + 1):
-                pivots.Item(index).RefreshTable()
-        target.Save()
-        saved = True
-    finally:
-        if target is not None:
-            target.Close(saved)
-        if excel is not None:
-            excel.Quit()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(path)
 
 
 def _build_reports(weekly: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -141,20 +111,15 @@ def run(root: Path = ROOT) -> Path:
     from src.canonical import load_config, pipeline_config_path
 
     cfg = load_config(pipeline_config_path(root))
-    template = root / TEMPLATE.relative_to(ROOT)
     profile_outputs = root / cfg["paths"]["outputs"]
     weekly_csv = profile_outputs / "evaluation" / "predictions_entrada_semanales.csv"
     output = profile_outputs / "informe pronosticos.xlsx"
-    if not template.is_file():
-        raise FileNotFoundError(f"No se encontró el libro plantilla: {template}")
     if not weekly_csv.is_file():
         raise FileNotFoundError(f"No se encontró evaluación del dashboard: {weekly_csv}")
     weekly = pd.read_csv(weekly_csv, parse_dates=["fecha_origen"])
     farm, block = _build_reports(weekly)
     maximum_week = int(pd.to_numeric(block["semana_proyeccion"]).max())
-    output.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(template, output)
-    _update_excel_tables(output, {
+    _write_report_workbook(output, {
         "COMPARACION_SEMANAL": farm,
         "COMPARACION_SEMANAL_BLOQUE": block,
     })

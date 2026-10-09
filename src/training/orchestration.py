@@ -36,8 +36,10 @@ STAGES: dict[str, tuple[str, ...]] = {
     ),
     "operacional": ("scripts/run_operational.py",),
     "dashboard": (
+        "scripts/build_conteos_vs_cortes.py",
         "src/evaluacion_entrada.py",
         "scripts/run_operational.py",
+        "src/evaluacion_vision_semanal.py",
     ),
 }
 

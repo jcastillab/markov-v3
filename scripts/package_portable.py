@@ -26,7 +26,6 @@ INCLUDE_DIRS = [
     "docs",
     "data/raw",
     "data/external",
-    "data/vision",
     "outputs",
 ]
 INCLUDE_FILES = [

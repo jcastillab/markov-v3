@@ -1,11 +1,10 @@
 import numpy as np
 import pandas as pd
-import sys
-import types
 import zipfile
+from openpyxl import load_workbook
 
 from scripts.package_portable import build_zip
-from scripts.update_forecast_report import _build_reports, _update_excel_tables
+from scripts.update_forecast_report import _build_reports, _write_report_workbook
 
 
 def test_report_keeps_future_week_without_inventing_real_values():
@@ -34,65 +33,19 @@ def test_report_keeps_future_week_without_inventing_real_values():
     assert farm.loc[0, "indicador"] == "SIN REAL"
 
 
-def test_report_table_update_uses_python_excel_automation(monkeypatch, tmp_path):
-    class Range:
-        Value2 = None
-
-    class PivotTables:
-        Count = 0
-
-    class Sheet:
-        def __init__(self):
-            self.ListObjects = types.SimpleNamespace(
-                Item=lambda _name: types.SimpleNamespace(
-                    ListColumns=types.SimpleNamespace(Count=1), Resize=lambda _range: None
-                )
-            )
-
-        @staticmethod
-        def Cells(*_args):
-            return object()
-
-        @staticmethod
-        def Range(*_args):
-            return Range()
-
-        @staticmethod
-        def PivotTables():
-            return PivotTables()
-
-    sheets = {name: Sheet() for name in (
-        "COMPARACION_SEMANAL", "COMPARACION_SEMANAL_BLOQUE"
-    )}
-
-    class Worksheets:
-        def Item(self, name):
-            return sheets[name]
-
-        def __iter__(self):
-            return iter(sheets.values())
-
-    workbook = types.SimpleNamespace(
-        Worksheets=Worksheets(), Save=lambda: None,
-        Close=lambda _save: setattr(workbook, "closed", True),
-    )
-    excel = types.SimpleNamespace(Workbooks=types.SimpleNamespace(
-        Open=lambda _path: workbook
-    ), Quit=lambda: setattr(excel, "quit", True))
-    client = types.ModuleType("win32com.client")
-    client.DispatchEx = lambda _name: excel
-    package = types.ModuleType("win32com")
-    package.__path__ = []
-    monkeypatch.setitem(sys.modules, "win32com", package)
-    monkeypatch.setitem(sys.modules, "win32com.client", client)
-
-    _update_excel_tables(tmp_path / "report.xlsx", {
-        "COMPARACION_SEMANAL": pd.DataFrame({"dato": [1, 2]}),
-        "COMPARACION_SEMANAL_BLOQUE": pd.DataFrame({"dato": [3]}),
+def test_report_workbook_is_written_without_excel_automation(tmp_path):
+    path = tmp_path / "report.xlsx"
+    _write_report_workbook(path, {
+        "COMPARACION_SEMANAL": pd.DataFrame({"semana": [202640], "real": [None]}),
+        "COMPARACION_SEMANAL_BLOQUE": pd.DataFrame({"bloque": ["1"], "proyectado": [4.5]}),
     })
 
-    assert workbook.closed
-    assert excel.quit
+    workbook = load_workbook(path, data_only=True)
+    assert workbook.sheetnames == ["COMPARACION_SEMANAL", "COMPARACION_SEMANAL_BLOQUE"]
+    assert workbook["COMPARACION_SEMANAL"]["A2"].value == 202640
+    assert workbook["COMPARACION_SEMANAL"]["B2"].value is None
+    assert workbook["COMPARACION_SEMANAL"].tables["Table1"].ref == "A1:B2"
+    assert workbook["COMPARACION_SEMANAL_BLOQUE"]["B2"].value == 4.5
 
 
 def test_portable_package_does_not_contain_powershell_files(tmp_path):

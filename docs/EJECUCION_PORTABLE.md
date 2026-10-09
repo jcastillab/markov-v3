@@ -63,6 +63,7 @@ El dashboard separa validacion fija, holdout rolling y evaluacion externa. La
 entrada externa permite filtrar por modelo, finca, bloque y semana, y muestra
 semanas completas, parciales, aciertos, cercanas y no aciertos.
 
-La actualizacion del informe Excel se ejecuta desde Python mediante `pywin32`.
-En Windows requiere Microsoft Excel instalado; la dependencia se instala junto
-con `requirements.txt`. El flujo no genera ni ejecuta scripts de PowerShell.
+El informe Excel se genera desde Python con `openpyxl`, sin requerir Excel,
+automatizacion COM ni scripts de PowerShell. Contiene las hojas tabulares
+semanal y finca-bloque; pivots y segmentadores del libro plantilla no se
+incluyen porque requieren Excel para crearse o actualizarse.

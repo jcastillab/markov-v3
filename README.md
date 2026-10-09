@@ -10,7 +10,7 @@ dashboard unificado de evaluacion historica y pronostico futuro.
 config/pipeline.yaml       Configuracion central (rutas, fuentes, parametros)
 data/raw/                  Fuentes historicas inmutables (xlsx)
 data/external/scoring/     Entrada externa solo para evaluacion
-data/vision/Resultados/    CSV de vision por semana (S36, S37, ...)
+data/vision/Resultados/    Entrada local por semana; no se incluye en ZIP portable
 src/
   canonical.py             Capa canonica (ingestion y homologacion)
   models/                  Implementaciones internas (M3, RF, GLM, Bayes)
@@ -65,6 +65,17 @@ py -3.12 -m venv .venv
 ```console
 .\.venv\Scripts\python.exe -m streamlit run src\dashboard_streamlit.py
 ```
+
+Para iniciar el dashboard con las vistas actualizadas, usa el orquestador
+(reconstruye scoring, recalcula la evaluacion de entrada y actualiza la
+proyeccion operacional):
+
+```console
+.\.venv\Scripts\python.exe scripts\run_dashboard.py
+```
+
+El empaquetado `empaquetar.bat` llama al empaquetador Python y omite por completo
+`data/vision/` para evitar que el ZIP crezca con los CSV semanales.
 
 Pestanas:
 
